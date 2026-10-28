@@ -5,3 +5,6 @@ dist/
 *.user
 .nuget-feed/
 *.DotSettings.user
+
+tmp-cap-*.txt
+
