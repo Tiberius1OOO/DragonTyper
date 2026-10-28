@@ -92,12 +92,24 @@ internal static unsafe class KtgInput
 
     public static bool SubmitWord(AtkUnitBasePtr addon, string word)
     {
-        if (addon.IsNull || string.IsNullOrEmpty(word))
+        if (addon.IsNull)
+        {
+            Plugin.Log.Error("SubmitWord aborted: KTGInput pointer is null.");
             return false;
+        }
+
+        if (string.IsNullOrEmpty(word))
+        {
+            Plugin.Log.Error("SubmitWord aborted: word text is empty.");
+            return false;
+        }
 
         var unit = (AtkUnitBase*)addon.Address;
         if (unit == null)
+        {
+            Plugin.Log.Error("SubmitWord aborted: AtkUnitBase* is null (Address={Address}).", addon.Address);
             return false;
+        }
 
         var values = stackalloc AtkValue[2];
         values[0] = default;
@@ -107,6 +119,7 @@ internal static unsafe class KtgInput
             values[0].SetManagedString("SubmitWord");
             values[1].SetManagedString(word);
             unit->FireCallback(2, values, true);
+            Plugin.Log.Debug("FireCallback SubmitWord ok for '{Word}'", word);
             return true;
         }
         catch (Exception ex)

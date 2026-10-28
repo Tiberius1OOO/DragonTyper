@@ -1,3 +1,4 @@
+using System;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
@@ -26,6 +27,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly WindowSystem windowSystem = new("DragonTyper");
     private readonly ConfigWindow configWindow;
+    private bool wasLoggedIn;
 
     public Plugin()
     {
@@ -44,7 +46,10 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfig;
         PluginInterface.UiBuilder.OpenMainUi += ToggleConfig;
 
-        Log.Information("DragonTyper loaded. Use /dragontyper. Active starts off.");
+        var version = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "unknown";
+        Log.Information(
+            "DragonTyper {Version} loaded (solo, no other plugin dependencies). Use /dragontyper. Active starts off.",
+            version);
     }
 
     public void Dispose()
@@ -62,13 +67,28 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
-        if (!ClientState.IsLoggedIn)
+        try
         {
-            Typer.ResetIdle();
-            return;
-        }
+            var loggedIn = ClientState.IsLoggedIn;
+            if (!loggedIn)
+            {
+                if (wasLoggedIn)
+                {
+                    Log.Information("Logged out. Typer paused.");
+                    Typer.ResetIdle();
+                }
 
-        Typer.Tick();
+                wasLoggedIn = false;
+                return;
+            }
+
+            wasLoggedIn = true;
+            Typer.Tick();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Framework update failed");
+        }
     }
 
     private void OnCommand(string command, string args)

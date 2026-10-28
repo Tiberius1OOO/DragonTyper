@@ -16,11 +16,11 @@ public sealed class ConfigWindow : Window, IDisposable
         : base("DragonTyper###DragonTyperConfig")
     {
         this.plugin = plugin;
-        Size = new Vector2(460, 440);
+        Size = new Vector2(460, 480);
         SizeCondition = ImGuiCond.FirstUseEver;
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(400, 390),
+            MinimumSize = new Vector2(400, 420),
             MaximumSize = new Vector2(720, 900),
         };
         Flags = ImGuiWindowFlags.NoScrollbar;
@@ -151,10 +151,18 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawStatusCard(TyperEngine typer)
     {
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.08f, 0.10f, 0.15f, 0.95f));
-        ImGui.BeginChild("##statusCard", new Vector2(0, 82), true);
+        ImGui.BeginChild("##statusCard", new Vector2(0, 118), true);
 
         ImGui.TextColored(Theme.Gold, "Status");
         ImGui.TextWrapped(typer.Status);
+
+        if (!string.IsNullOrEmpty(typer.LastError))
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(Theme.ActiveOff, "Last error");
+            ImGui.TextWrapped(typer.LastError);
+            ImGui.TextColored(Theme.TextMuted, "Details are in /xllog (filter: DragonTyper)");
+        }
 
         ImGui.Spacing();
         ImGui.TextColored(Theme.Cyan, $"Hits  {typer.Hits}");

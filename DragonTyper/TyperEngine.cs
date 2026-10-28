@@ -17,6 +17,7 @@ public sealed class TyperEngine(Plugin plugin)
     private const uint BigHp = 1000;
     private const int LongWordChars = 28;
     private const int LongMaxMs = 5000;
+    private const int WarnCooldownMs = 5000;
 
     private static readonly HashSet<uint> LetterlockCasts = [49529, 49532, 49702];
 
@@ -28,8 +29,11 @@ public sealed class TyperEngine(Plugin plugin)
     private float waitRoll;
     private long? holdUntil;
     private string status = "Idle";
+    private bool sawAddon;
+    private bool loggedSessionStart;
 
     public string Status => status;
+    public string? LastError { get; private set; }
     public int Hits { get; private set; }
     public int Misses { get; private set; }
 
@@ -39,16 +43,38 @@ public sealed class TyperEngine(Plugin plugin)
         holdUntil = null;
         nextCheckAt = 0;
         recent.Clear();
+        sawAddon = false;
+        loggedSessionStart = false;
+        LastError = null;
         status = plugin.Configuration.Active ? "Waiting for Keybound Brawler input" : "Inactive";
     }
 
     public void DumpAddon()
     {
-        var dump = KtgInput.Dump(KtgInput.GetAddon());
-        foreach (var line in dump.Split('\n'))
+        try
         {
-            if (!string.IsNullOrWhiteSpace(line))
-                Plugin.Log.Information("[dump] {Line}", line.TrimEnd());
+            var addon = KtgInput.GetAddon();
+            if (addon.IsNull)
+            {
+                Plugin.Log.Warning("Dump requested but KTGInput is not open/ready/visible.");
+                LastError = "Dump failed: KTGInput not open";
+                return;
+            }
+
+            var dump = KtgInput.Dump(addon);
+            Plugin.Log.Information("=== KTGInput dump begin ===");
+            foreach (var line in dump.Split('\n'))
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                    Plugin.Log.Information("[dump] {Line}", line.TrimEnd());
+            }
+
+            Plugin.Log.Information("=== KTGInput dump end (AtkValuesCount={Count}) ===", addon.AtkValuesCount);
+        }
+        catch (Exception ex)
+        {
+            LastError = $"Dump failed: {ex.Message}";
+            PluginLogHelpers.Error(ex, "DumpAddon crashed");
         }
     }
 
@@ -59,6 +85,21 @@ public sealed class TyperEngine(Plugin plugin)
             return;
         nextCheckAt = now + CheckEveryMs;
 
+        try
+        {
+            TickInner(now);
+        }
+        catch (Exception ex)
+        {
+            Misses++;
+            LastError = ex.Message;
+            status = $"Error: {ex.Message}";
+            PluginLogHelpers.ErrorOnce("tick-crash", WarnCooldownMs, ex, "Typer tick failed");
+        }
+    }
+
+    private void TickInner(long now)
+    {
         if (!plugin.Configuration.Active)
         {
             waitFrom = null;
@@ -66,27 +107,96 @@ public sealed class TyperEngine(Plugin plugin)
             return;
         }
 
+        if (!loggedSessionStart)
+        {
+            loggedSessionStart = true;
+            Plugin.Log.Information(
+                "Active session started. Delay={Delay}ms LongSentenceDelay={Long}",
+                plugin.Configuration.WordDelayMs,
+                plugin.Configuration.LongSentenceDelay);
+        }
+
         var addon = KtgInput.GetAddon();
         if (addon.IsNull)
         {
+            if (sawAddon)
+            {
+                Plugin.Log.Information("KTGInput closed. Returning to wait state.");
+                sawAddon = false;
+            }
+
             waitFrom = null;
             status = "Waiting for Keybound Brawler input";
             return;
         }
 
-        if (!KtgInput.TryGetInputEnabled(addon, out var enabled) || !enabled)
+        if (!sawAddon)
+        {
+            sawAddon = true;
+            Plugin.Log.Information(
+                "KTGInput opened. AtkValuesCount={Count} Ready={Ready} Visible={Visible}",
+                addon.AtkValuesCount,
+                addon.IsReady,
+                addon.IsVisible);
+        }
+
+        if (!KtgInput.TryGetInputEnabled(addon, out var enabled))
+        {
+            status = "Cannot read input enabled flag";
+            LastError = "KTGInput AtkValues too short or unreadable (index 2)";
+            PluginLogHelpers.WarnOnce(
+                "enabled-unreadable",
+                WarnCooldownMs,
+                "Cannot read KTGInput enabled flag. AtkValuesCount={Count}. Run /dragontyper dump.",
+                addon.AtkValuesCount);
+            return;
+        }
+
+        if (!enabled)
         {
             waitFrom = null;
             status = "Letterlock: holding";
             return;
         }
 
-        var words = KtgInput.ReadWords(addon);
+        List<KtgInput.WordEntry> words;
+        try
+        {
+            words = KtgInput.ReadWords(addon);
+        }
+        catch (Exception ex)
+        {
+            LastError = $"Word read failed: {ex.Message}";
+            status = "Error reading words";
+            PluginLogHelpers.ErrorOnce("read-words", WarnCooldownMs, ex, "Failed to read words from KTGInput");
+            return;
+        }
+
+        if (words.Count == 0)
+        {
+            waitFrom = null;
+            status = "No words parsed from KTGInput";
+            LastError = "Addon open but no words parsed. Layout may have changed.";
+            PluginLogHelpers.WarnOnce(
+                "no-words-parsed",
+                WarnCooldownMs,
+                "KTGInput is open and enabled, but no words were parsed (AtkValuesCount={Count}). Run /dragontyper dump.",
+                addon.AtkValuesCount);
+            return;
+        }
+
         var text = Pick(words, now);
         if (text == null)
         {
             waitFrom = null;
-            status = "No word to type";
+            status = "No matching enemy for available words";
+            PluginLogHelpers.WarnOnce(
+                "no-match",
+                WarnCooldownMs,
+                "Parsed {Count} word(s) but none matched a living targetable enemy. First='{First}' EntityId={EntityId}",
+                words.Count,
+                words[0].Text,
+                words[0].EntityId);
             return;
         }
 
@@ -112,6 +222,7 @@ public sealed class TyperEngine(Plugin plugin)
         {
             holdUntil = now + (long)Math.Max(0, remaining) + GuardMs;
             status = "Holding for Letterlock cast";
+            Plugin.Log.Debug("Letterlock cast guard for {Ms}ms", holdUntil - now);
             return;
         }
 
@@ -121,14 +232,19 @@ public sealed class TyperEngine(Plugin plugin)
         if (KtgInput.SubmitWord(addon, text))
         {
             Hits++;
+            LastError = null;
             status = $"Typed: {text}";
-            Plugin.Log.Debug("Typed '{Text}'", text);
+            Plugin.Log.Information("Typed '{Text}' (hits={Hits})", text, Hits);
         }
         else
         {
             Misses++;
+            LastError = $"SubmitWord failed for '{text}'";
             status = $"Missed: {text}";
-            Plugin.Log.Warning("Missed '{Text}'", text);
+            Plugin.Log.Error(
+                "SubmitWord failed for '{Text}' (misses={Misses}). Check /xllog for FireCallback details.",
+                text,
+                Misses);
         }
     }
 
@@ -156,7 +272,10 @@ public sealed class TyperEngine(Plugin plugin)
 
         var player = Plugin.ObjectTable.LocalPlayer;
         if (player == null)
+        {
+            PluginLogHelpers.WarnOnce("no-player", WarnCooldownMs, "LocalPlayer is null while Active.");
             return null;
+        }
 
         var me = player.Position;
 
@@ -177,7 +296,6 @@ public sealed class TyperEngine(Plugin plugin)
             var isCasting = maxHp < BigHp && IsCasting(battle);
             var distance = Distance2D(me, battle.Position);
 
-            // Prefer casting over non-casting; among equals prefer nearer; then larger HP.
             var better = best == null;
             if (best != null)
             {
@@ -218,8 +336,9 @@ public sealed class TyperEngine(Plugin plugin)
         {
             return battle.IsCasting && battle.CastActionId != 0;
         }
-        catch
+        catch (Exception ex)
         {
+            PluginLogHelpers.WarnOnce("cast-read", WarnCooldownMs, "IsCasting read failed: {Message}", ex.Message);
             return false;
         }
     }
@@ -235,7 +354,6 @@ public sealed class TyperEngine(Plugin plugin)
             if (!battle.IsCasting || !LetterlockCasts.Contains(battle.CastActionId))
                 continue;
 
-            // Remaining cast time in seconds → ms.
             var left = (battle.TotalCastTime - battle.CurrentCastTime) * 1000f;
             if (soonest is null || left < soonest)
                 soonest = left;

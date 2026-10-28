@@ -2,9 +2,9 @@
   {
     "Author": "Tiberius1OOO",
     "Name": "DragonTyper",
-    "Description": "While Active is on, DragonTyper watches the Keybound Brawler input window and submits words for you. Configure base delay, optional longer wait for long sentences, and enable or disable at any time. Outside the minigame it stays passive.",
+    "Description": "While Active is on, DragonTyper watches the Keybound Brawler input window and submits words for you. Configure base delay, optional longer wait for long sentences, and enable or disable at any time. Outside the minigame it stays passive. Runs solo with no other plugin dependencies.",
     "InternalName": "DragonTyper",
-    "AssemblyVersion": "1.0.1.0",
+    "AssemblyVersion": "1.0.2.0",
     "RepoUrl": "https://github.com/Tiberius1OOO/DragonTyper",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -15,7 +15,7 @@
     "DownloadLinkInstall": "https://github.com/Tiberius1OOO/DragonTyper/releases/latest/download/DragonTyper.zip",
     "DownloadLinkUpdate": "https://github.com/Tiberius1OOO/DragonTyper/releases/latest/download/DragonTyper.zip",
     "DownloadLinkTesting": "https://github.com/Tiberius1OOO/DragonTyper/releases/latest/download/DragonTyper.zip",
-    "LastUpdate": "1793218593",
+    "LastUpdate": "1793218783",
     "Tags": ["keybound", "brawler", "typer", "automation"]
   }
 ]

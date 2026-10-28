@@ -6,6 +6,14 @@
 
 Dalamud plugin for **Keybound Brawler**. You queue and enter the duty yourself. Once **Active** is on, DragonTyper watches the in-game word input and submits words for you with a configurable delay (±20% random jitter). Outside the minigame it stays passive.
 
+## Requirements
+
+DragonTyper runs **solo**.
+
+- Needs **XIVLauncher + Dalamud** only
+- **No other plugins** are required (no vnavmesh, no helper plugins, no dependencies)
+- You still register / enter Keybound Brawler yourself
+
 ## What it does
 
 - **Active** toggle: typing only runs when you turn it on
@@ -14,6 +22,22 @@ Dalamud plugin for **Keybound Brawler**. You queue and enter the duty yourself. 
 - Holds during Letterlock and briefly around Letterlock casts
 - Prefers casting enemies, then the nearest larger target
 - Does nothing when logged out or when the Keybound Brawler input is closed
+
+## Logging and troubleshooting
+
+If something does not work, open `/xllog` and filter for `DragonTyper`.
+
+The plugin writes:
+
+- Info when Active starts, when `KTGInput` opens/closes, and when a word is typed
+- Warnings when the addon is open but words cannot be parsed, or no enemy matches
+- Errors when `SubmitWord` / FireCallback fails, or when a tick crashes
+
+In the UI, **Last error** shows the newest problem. For raw addon values use:
+
+```text
+/dragontyper dump
+```
 
 ## Commands
 
