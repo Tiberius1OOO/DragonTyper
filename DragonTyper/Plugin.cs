@@ -24,6 +24,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public Configuration Configuration { get; }
     public TyperEngine Typer { get; }
+    internal LiveCapture Capture { get; }
 
     private readonly WindowSystem windowSystem = new("DragonTyper");
     private readonly ConfigWindow configWindow;
@@ -33,12 +34,13 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Typer = new TyperEngine(this);
+        Capture = new LiveCapture();
         configWindow = new ConfigWindow(this);
         windowSystem.AddWindow(configWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Open DragonTyper. /dragontyper start|stop|toggle|dump",
+            HelpMessage = "Open DragonTyper. /dragontyper start|stop|toggle|dump|capture",
         });
 
         Framework.Update += OnFrameworkUpdate;
@@ -83,6 +85,15 @@ public sealed class Plugin : IDalamudPlugin
             }
 
             wasLoggedIn = true;
+            try
+            {
+                Capture.Tick();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Live capture tick failed");
+            }
+
             Typer.Tick();
         }
         catch (Exception ex)
@@ -111,6 +122,11 @@ public sealed class Plugin : IDalamudPlugin
                 Typer.DumpAddon();
                 ChatGui.Print("[DragonTyper] Dump written to /xllog.");
                 break;
+            case "capture":
+            case "probe":
+            case "record":
+                ChatGui.Print("[DragonTyper] " + Capture.Start());
+                break;
             default:
                 ToggleConfig();
                 break;
@@ -127,3 +143,4 @@ public sealed class Plugin : IDalamudPlugin
             : "[DragonTyper] Stopped.");
     }
 }
+
