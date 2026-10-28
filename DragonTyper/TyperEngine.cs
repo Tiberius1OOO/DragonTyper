@@ -251,14 +251,19 @@ public sealed class TyperEngine(Plugin plugin)
         return Math.Max(0, (int)wait);
     }
 
+    /// <summary>
+    /// Same priority as Minion Typer.pick: casting add → nearest → bigger HP.
+    /// No unverified fallback — Minion returns nil rather than invent a word.
+    /// Sole exception: a single ghost word with no entity yet (input open, balloon not ready).
+    /// </summary>
     private string? Pick(List<KtgInput.WordEntry> words, long now)
     {
         string? best = null;
         var bestCasting = false;
         var bestDistance = float.MaxValue;
         var bestHp = 0u;
-        string? fallback = null;
-        var fallbackScore = int.MinValue;
+        string? ghostOnly = null;
+        var ghostCount = 0;
 
         var player = Plugin.ObjectTable.LocalPlayer;
         var me = player?.Position ?? Vector3.Zero;
@@ -270,21 +275,12 @@ public sealed class TyperEngine(Plugin plugin)
             if (recent.TryGetValue(word.Text, out var until) && now < until)
                 continue;
 
-            // Fallback score: sheet words and longer phrases beat hotbar leftovers.
-            var score = 0;
-            if (Plugin.Words.IsSheetWord(word.Text))
-                score += 100;
-            if (word.EntityId != 0)
-                score += 50;
-            score += Math.Min(word.Text.Length, 40);
-            if (fallback is null || score > fallbackScore)
-            {
-                fallback = word.Text;
-                fallbackScore = score;
-            }
-
             if (word.EntityId == 0)
+            {
+                ghostCount++;
+                ghostOnly ??= word.Text;
                 continue;
+            }
 
             var obj = FindObject(word.EntityId);
             if (obj is not IBattleChara battle)
@@ -316,7 +312,11 @@ public sealed class TyperEngine(Plugin plugin)
             bestHp = maxHp;
         }
 
-        return best ?? fallback;
+        if (best != null)
+            return best;
+
+        // Only when nothing has a live entity: allow the single KTGInput ghost word.
+        return ghostCount == 1 ? ghostOnly : null;
     }
 
     private static IGameObject? FindObject(ulong entityId)

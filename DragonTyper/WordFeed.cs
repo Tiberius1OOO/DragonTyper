@@ -14,11 +14,11 @@ using AtkValueType = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType;
 namespace DragonTyper;
 
 /// <summary>
-/// Live word feed.
-/// 1) Visible KTGEWord text nodes (normal balloons).
-/// 2) If a balloon has entity but no text (boss/interrupt): pull only
-///    KTGTypeWordTextData sheet members from compact string arrays / number pairs.
-/// Never accepts hotbar chrome (Ability/Range/…) — those are not in the sheet.
+/// Live word feed — Dalamud stand-in for Minion's KTGInput:GetData().
+/// 1) Visible KTGEWord text nodes (normal green balloons).
+/// 2) KTGInput ghost word (blue input bar) paired to empty balloon entities.
+/// 3) Sheet-backed (entity, wordId) number-array pairs for empty balloons only.
+/// Never greps random UI string arrays — that invented "Shinra" / "Price of Progress".
 /// </summary>
 internal sealed unsafe class WordFeed : IDisposable
 {
@@ -127,6 +127,7 @@ internal sealed unsafe class WordFeed : IDisposable
 
             var balloons = ReadBalloons();
             var found = new List<KtgInput.WordEntry>();
+            var ghost = ReadGhostFromInput();
 
             foreach (var b in balloons.Where(b => b.Texts.Count > 0))
             {
@@ -140,34 +141,56 @@ internal sealed unsafe class WordFeed : IDisposable
             var emptyEntities = balloons
                 .Where(b => b.Texts.Count == 0 && b.EntityId != 0 && IsEnemyEntity(b.EntityId))
                 .Select(b => b.EntityId)
-                .ToHashSet();
+                .Distinct()
+                .ToList();
 
-            // Boss/interrupt path: no Text on balloon, but phrase is in sheet-backed arrays.
+            // Minion GetData path: empty balloon + live word on KTGInput itself.
+            // Capture 223426: balloon Atk entity set, no text; KTGInput text = "bugaboo".
+            if (emptyEntities.Count > 0 && ghost.Count > 0)
+            {
+                if (emptyEntities.Count == 1)
+                {
+                    var entity = emptyEntities[0];
+                    foreach (var text in ghost)
+                        found.Add(new KtgInput.WordEntry(entity, text));
+                }
+                else
+                {
+                    // Multiple empty balloons: attach the ghost word to the nearest live enemy.
+                    var nearest = NearestEmptyEntity(emptyEntities);
+                    foreach (var text in ghost)
+                        found.Add(new KtgInput.WordEntry(nearest != 0 ? nearest : emptyEntities[0], text));
+                }
+            }
+            else if (balloons.Count == 0 && ghost.Count > 0)
+            {
+                // Input open, no balloon instances yet — still type the ghost word.
+                foreach (var text in ghost)
+                    found.Add(new KtgInput.WordEntry(0, text));
+            }
+
+            // Last resort for empty balloons: real (entity, wordId) number pairs only.
             if (emptyEntities.Count > 0)
             {
                 var sheetHits = new List<KtgInput.WordEntry>();
-                CollectSheetWordsFromStringArrays(sheetHits);
-                CollectSheetWordsForEntities(sheetHits, emptyEntities);
-
-                // Attach empty balloon entity when only one empty balloon (typical boss).
-                var entity = emptyEntities.Count == 1 ? emptyEntities.First() : 0UL;
-                foreach (var hit in sheetHits)
-                {
-                    var id = hit.EntityId != 0 ? hit.EntityId : entity;
-                    found.Add(new KtgInput.WordEntry(id, hit.Text));
-                }
+                CollectSheetWordsForEntities(sheetHits, emptyEntities.ToHashSet());
+                found.AddRange(sheetHits);
             }
 
             found = Dedup(found);
             if (found.Count == 0)
                 return;
 
-            // Prefer real balloon text / sheet words; drop anything not on sheet unless it came from a balloon node.
+            // Keep balloon text, KTGInput ghost, or sheet-backed phrases — nothing else.
             var balloonTexts = new HashSet<string>(
                 balloons.SelectMany(b => b.Texts),
                 StringComparer.OrdinalIgnoreCase);
+            var ghostSet = new HashSet<string>(ghost, StringComparer.OrdinalIgnoreCase);
             found = found
-                .Where(w => balloonTexts.Contains(w.Text) || sheetWordSet.Contains(w.Text))
+                .Where(w =>
+                    balloonTexts.Contains(w.Text)
+                    || ghostSet.Contains(w.Text)
+                    || sheetWordSet.Contains(w.Text))
                 .ToList();
             found = Dedup(found);
             if (found.Count == 0)
@@ -178,7 +201,7 @@ internal sealed unsafe class WordFeed : IDisposable
                 live = found;
                 liveAt = Environment.TickCount64;
                 lastNote =
-                    $"feed={found.Count} balloons={balloons.Count} empty={emptyEntities.Count} via {args.AddonName}";
+                    $"feed={found.Count} balloons={balloons.Count} empty={emptyEntities.Count} ghost={ghost.Count} via {args.AddonName}";
             }
         }
         catch (Exception ex)
@@ -237,51 +260,59 @@ internal sealed unsafe class WordFeed : IDisposable
         return list;
     }
 
-    private void CollectSheetWordsFromStringArrays(List<KtgInput.WordEntry> into)
+    private static List<string> ReadGhostFromInput()
     {
-        var module = RaptureAtkModule.Instance();
-        if (module == null)
-            return;
-
-        var holder = module->AtkArrayDataHolder;
-        var count = Math.Min((int)holder.StringArrayCount, 200);
-        for (var i = 0; i < count; i++)
+        try
         {
-            StringArrayData* sad;
-            try
+            var addon = KtgInput.GetAddon();
+            return KtgInput.ReadGhostWordsFromInput(addon)
+                .Select(w => w.Text)
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static ulong NearestEmptyEntity(List<ulong> entities)
+    {
+        try
+        {
+            var player = Plugin.ObjectTable.LocalPlayer;
+            if (player == null)
+                return 0;
+
+            ulong best = 0;
+            var bestDist = float.MaxValue;
+            foreach (var id in entities)
             {
-                sad = module->GetStringArrayData(i);
-            }
-            catch
-            {
-                continue;
+                foreach (var obj in Plugin.ObjectTable)
+                {
+                    if (obj == null)
+                        continue;
+                    if (obj.EntityId != id && obj.GameObjectId != id)
+                        continue;
+                    if (obj is not IBattleChara battle || battle.IsDead || battle.CurrentHp == 0)
+                        continue;
+                    var dx = player.Position.X - battle.Position.X;
+                    var dz = player.Position.Z - battle.Position.Z;
+                    var d = dx * dx + dz * dz;
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        best = id;
+                    }
+                }
             }
 
-            // Hotbar/tooltip arrays are large; live KTG word lists seen in captures are compact.
-            if (sad == null || sad->StringArray == null || sad->Size is <= 0 or > 48)
-                continue;
-
-            for (var s = 0; s < sad->Size; s++)
-            {
-                try
-                {
-                    var ptr = sad->StringArray[s];
-                    if (!ptr.HasValue)
-                        continue;
-                    var text = ptr.ToString()?.Trim();
-                    if (string.IsNullOrEmpty(text))
-                        continue;
-                    if (!sheetWordSet.Contains(text))
-                        continue;
-                    if (!KtgInput.IsMinigameWordPublic(text))
-                        continue;
-                    into.Add(new KtgInput.WordEntry(0, text));
-                }
-                catch
-                {
-                    // ignore
-                }
-            }
+            return best;
+        }
+        catch
+        {
+            return 0;
         }
     }
 
