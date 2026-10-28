@@ -142,8 +142,9 @@ internal sealed unsafe class LiveCapture
         WriteLine($"----- snapshot #{snapshotIndex} t={elapsed}ms {DateTime.Now:HH:mm:ss.fff} -----");
 
         SafeSection("KTGInput", DumpKtgInput);
-        SafeSection("KTGEWord", () => DumpNamedAddon("KTGEWord"));
+        SafeSection("KTGEWord multi", DumpKtgEWordMulti);
         SafeSection("All KTG addons", DumpAllKtgAddons);
+        SafeSection("NumberArray entity/word pairs", DumpNumberWordPairs);
         SafeSection("Agents", DumpAgents);
         SafeSection("String arrays", DumpStringArrays);
         SafeSection("Nearby objects", DumpNearbyObjects);
@@ -190,6 +191,84 @@ internal sealed unsafe class LiveCapture
 
         WriteLine($"  visible={addon.IsVisible} ready={addon.IsReady} values={addon.AtkValuesCount}");
         DumpAddonDeep(addon, "  ");
+    }
+
+    private void DumpKtgEWordMulti()
+    {
+        for (var i = 1; i <= 16; i++)
+        {
+            try
+            {
+                var addon = Plugin.GameGui.GetAddonByName("KTGEWord", i);
+                if (addon.IsNull)
+                {
+                    WriteLine($"  KTGEWord[{i}] null");
+                    if (i > 2)
+                        break;
+                    continue;
+                }
+
+                WriteLine($"  KTGEWord[{i}] vis={addon.IsVisible} ready={addon.IsReady} values={addon.AtkValuesCount}");
+                DumpAddonDeep(addon, "    ");
+            }
+            catch (Exception ex)
+            {
+                WriteLine($"  KTGEWord[{i}] err {ex.Message}");
+            }
+        }
+    }
+
+    private void DumpNumberWordPairs()
+    {
+        try
+        {
+            var sheet = Plugin.Words?.SheetWords;
+            if (sheet == null || sheet.Count == 0)
+            {
+                WriteLine("  (word sheet empty)");
+                return;
+            }
+
+            var module = RaptureAtkModule.Instance();
+            if (module == null)
+                return;
+
+            var holder = module->AtkArrayDataHolder;
+            var count = Math.Min((int)holder.NumberArrayCount, 200);
+            var hits = 0;
+            for (var i = 0; i < count && hits < 40; i++)
+            {
+                var nad = module->GetNumberArrayData(i);
+                if (nad == null || nad->IntArray == null || nad->Size is <= 0 or > 96)
+                    continue;
+                var size = nad->Size;
+                for (var s = 0; s + 1 < size && hits < 40; s++)
+                {
+                    var a = nad->IntArray[s];
+                    var b = nad->IntArray[s + 1];
+                    var ua = unchecked((uint)a);
+                    var ub = unchecked((uint)b);
+                    string? text = null;
+                    uint entity = 0;
+                    if (ua is >= 0x40000000 and <= 0x4FFFFFFF && sheet.TryGetValue(ub, out text))
+                        entity = ua;
+                    else if (ub is >= 0x40000000 and <= 0x4FFFFFFF && sheet.TryGetValue(ua, out text))
+                        entity = ub;
+                    else
+                        continue;
+
+                    WriteLine($"  num[{i}][{s}] entity={entity} wordId → \"{text}\"");
+                    hits++;
+                }
+            }
+
+            if (hits == 0)
+                WriteLine("  (no entity/wordId pairs this snapshot)");
+        }
+        catch (Exception ex)
+        {
+            WriteLine($"  num-pair err {ex.Message}");
+        }
     }
 
     private void DumpAllKtgAddons()

@@ -85,12 +85,31 @@ internal static unsafe class KtgInput
 
     public static List<WordEntry> ReadWords(AtkUnitBasePtr inputAddon)
     {
-        // Only KTGEWord balloons — other KTG* addons leak cast-bar / HUD text.
+        // 0) Live feed (Minion GetData equivalent: sheet-resolved number pairs + all KTGEWord instances).
+        try
+        {
+            var feed = Plugin.Words?.GetLiveWords() ?? [];
+            if (feed.Count > 0)
+            {
+                StoreCache(feed, $"WordFeed:{Plugin.Words?.LastNote}");
+                return feed;
+            }
+        }
+        catch (Exception ex)
+        {
+            PluginLogHelpers.WarnOnce("wordfeed-read", 5000, "WordFeed read failed: {Message}", ex.Message);
+        }
+
+        // 1) Every KTGEWord instance (boss/adds often use index > 1).
+        var fromAll = ReadAllKtgEWordInstances();
+        if (fromAll.Count > 0)
+            return fromAll;
+
+        // 2) Single GetAddonByName fallback.
         var fromWord = ReadWordsFromNamedAddon(WordAddonName, "KTGEWord");
         if (fromWord.Count > 0)
             return fromWord;
 
-        // Brief cache so a one-frame flicker does not clear the queue.
         lock (Gate)
         {
             if (cachedWords.Count > 0 && Environment.TickCount64 - lastCacheAt < 800)
@@ -99,6 +118,58 @@ internal static unsafe class KtgInput
 
         _ = inputAddon;
         return [];
+    }
+
+    public static List<WordEntry> CollectWordsFromAddonPublic(AtkUnitBasePtr addon) =>
+        CollectFromAddon(addon, includeInvisible: true);
+
+    public static bool IsMinigameWordPublic(string? text) => IsMinigameWord(text);
+
+    private static List<WordEntry> ReadAllKtgEWordInstances()
+    {
+        var words = new List<WordEntry>();
+        try
+        {
+            for (var i = 1; i <= 32; i++)
+            {
+                var addon = Plugin.GameGui.GetAddonByName(WordAddonName, i);
+                if (addon.IsNull)
+                {
+                    if (i > 4)
+                        break;
+                    continue;
+                }
+
+                if (!addon.IsVisible)
+                    continue;
+
+                ulong entity = 0;
+                try
+                {
+                    var unit = (AtkUnitBase*)addon.Address;
+                    if (unit->AtkValues != null && unit->AtkValuesCount > 1
+                        && unit->AtkValues[1].Type == CsAtkValueType.UInt)
+                        entity = unit->AtkValues[1].UInt;
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                foreach (var w in CollectFromAddon(addon, includeInvisible: true))
+                    words.Add(new WordEntry(entity != 0 ? entity : w.EntityId, w.Text));
+            }
+
+            words = FilterAndDedup(words);
+            if (words.Count > 0)
+                StoreCache(words, "KTGEWord[all]");
+        }
+        catch (Exception ex)
+        {
+            PluginLogHelpers.WarnOnce("ktgeword-multi", 5000, "KTGEWord multi-read failed: {Message}", ex.Message);
+        }
+
+        return words;
     }
 
     private static List<WordEntry> ReadWordsFromNamedAddon(string name, string label)

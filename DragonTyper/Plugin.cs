@@ -1,4 +1,5 @@
 using System;
+using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
@@ -21,10 +22,13 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
+    [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
+    [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
 
     public Configuration Configuration { get; }
     public TyperEngine Typer { get; }
     internal LiveCapture Capture { get; }
+    internal static WordFeed Words { get; private set; } = null!;
 
     private readonly WindowSystem windowSystem = new("DragonTyper");
     private readonly ConfigWindow configWindow;
@@ -35,6 +39,7 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Typer = new TyperEngine(this);
         Capture = new LiveCapture();
+        Words = new WordFeed();
         configWindow = new ConfigWindow(this);
         windowSystem.AddWindow(configWindow);
 
@@ -47,6 +52,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw += windowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfig;
         PluginInterface.UiBuilder.OpenMainUi += ToggleConfig;
+        Words.Enable(AddonLifecycle);
 
         var version = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "unknown";
         Log.Information(
@@ -60,6 +66,16 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= windowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfig;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleConfig;
+        try
+        {
+            Words.Disable(AddonLifecycle);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "WordFeed disable failed");
+        }
+
+        Words.Dispose();
         windowSystem.RemoveAllWindows();
         configWindow.Dispose();
         CommandManager.RemoveHandler(CommandName);
