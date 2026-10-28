@@ -17,10 +17,8 @@ namespace DragonTyper;
 
 /// <summary>
 /// Keybound Brawler word reader.
-/// Minion uses KTGInput:GetData() → {id, text}. We approximate that by:
-///   1) KTGInput text nodes (the live "ghost" word in the input bar),
-///   2) KTGEWord balloon text + entity Atk[1],
-///   3) sheet-backed entity/wordId number pairs when a balloon has no text.
+/// Trust only on-screen KTGEWord balloon text (WordFeed). Atk[1] is a soft hint.
+/// Do not read KTGInput TextInput as a word source — that is our SetText echo.
 /// NamePlate is ignored — player/pet names.
 /// </summary>
 internal static unsafe class KtgInput
@@ -93,7 +91,7 @@ internal static unsafe class KtgInput
 
     public static List<WordEntry> ReadWords(AtkUnitBasePtr inputAddon)
     {
-        // 0) Live feed (balloons + KTGInput ghost word + entity/wordId pairs).
+        // 0) Live balloon feed.
         try
         {
             var feed = Plugin.Words?.GetLiveWords() ?? [];
@@ -108,20 +106,12 @@ internal static unsafe class KtgInput
             PluginLogHelpers.WarnOnce("wordfeed-read", 5000, "WordFeed read failed: {Message}", ex.Message);
         }
 
-        // 1) Direct KTGInput ghost word (same UI Minion's GetData reads from).
-        var ghost = ReadGhostWordsFromInput(inputAddon);
-        if (ghost.Count > 0)
-        {
-            StoreCache(ghost, "KTGInput:ghost");
-            return ghost;
-        }
-
-        // 2) Every KTGEWord instance (boss/adds often use index > 1).
+        // 1) Every KTGEWord instance (pooled addon; deep text walk).
         var fromAll = ReadAllKtgEWordInstances();
         if (fromAll.Count > 0)
             return fromAll;
 
-        // 3) Single GetAddonByName fallback.
+        // 2) Single GetAddonByName fallback.
         var fromWord = ReadWordsFromNamedAddon(WordAddonName, "KTGEWord");
         if (fromWord.Count > 0)
             return fromWord;
@@ -132,6 +122,7 @@ internal static unsafe class KtgInput
                 return cachedWords.ToList();
         }
 
+        _ = inputAddon;
         return [];
     }
 
@@ -139,46 +130,6 @@ internal static unsafe class KtgInput
         CollectFromAddon(addon, includeInvisible: true);
 
     public static bool IsMinigameWordPublic(string? text) => IsMinigameWord(text);
-
-    /// <summary>
-    /// The blue input bar on KTGInput carries the live word (captures: "bugaboo", "Burt", …).
-    /// Progress counters like "1/1" are skipped.
-    /// </summary>
-    public static List<WordEntry> ReadGhostWordsFromInput(AtkUnitBasePtr inputAddon)
-    {
-        if (inputAddon.IsNull || !inputAddon.IsVisible)
-            return [];
-
-        var words = new List<WordEntry>();
-        foreach (var raw in ReadAllTextNodesRaw(inputAddon, 80))
-        {
-            if (IsProgressCounter(raw))
-                continue;
-            if (!IsMinigameWord(raw))
-                continue;
-            words.Add(new WordEntry(0, raw.Trim()));
-        }
-
-        return FilterAndDedup(words);
-    }
-
-    private static bool IsProgressCounter(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return true;
-        text = text.Trim();
-        // "1/1", "3 / 12", fullwidth digits, etc.
-        var slash = 0;
-        foreach (var c in text)
-        {
-            if (c is '/' or '\uFF0F')
-                slash++;
-            else if (!(char.IsDigit(c) || char.IsWhiteSpace(c)))
-                return false;
-        }
-
-        return slash == 1;
-    }
 
     private static List<WordEntry> ReadAllKtgEWordInstances()
     {
@@ -930,10 +881,12 @@ internal static unsafe class KtgInput
         {
             if (char.IsLetter(c))
                 letter++;
-            else if (!(char.IsWhiteSpace(c) || c is '.' or ',' or '\'' or '-' or '!' or '?' or ':' or ';'))
+            else if (!(char.IsWhiteSpace(c) || char.IsDigit(c)
+                       || c is '.' or ',' or '\'' or '-' or '!' or '?' or ':' or ';'))
                 return false;
         }
 
+        // Allow "Sector 8"; reject pure digit strings / progress counters.
         return letter >= 2;
     }
 

@@ -391,19 +391,28 @@ internal sealed unsafe class LiveCapture
             var n = 0;
             foreach (var obj in Plugin.ObjectTable)
             {
-                if (obj == null || string.IsNullOrEmpty(obj.Name.TextValue))
+                if (obj == null)
                     continue;
-                if (n++ > 40)
+                // Nameless BattleNpcs are the Keybound adds — do not skip empty names.
+                if (n++ > 60)
                 {
                     WriteLine("  ...(truncated objects)");
                     break;
                 }
 
                 var kind = obj.GetType().Name;
-                var battle = obj as IBattleChara;
-                var cast = battle is { IsCasting: true } ? $" cast={battle.CastActionId}" : "";
-                WriteLine(
-                    $"  obj kind={kind} id={obj.EntityId} name=\"{obj.Name.TextValue}\" targetable={obj.IsTargetable}{cast}");
+                var name = obj.Name.TextValue;
+                if (obj is IBattleChara battle)
+                {
+                    var cast = battle.IsCasting ? $" cast={battle.CastActionId}" : "";
+                    WriteLine(
+                        $"  obj kind={kind} id={obj.EntityId} name=\"{name}\" hp={battle.CurrentHp}/{battle.MaxHp} dead={battle.IsDead} targetable={obj.IsTargetable}{cast}");
+                }
+                else if (!string.IsNullOrEmpty(name))
+                {
+                    WriteLine(
+                        $"  obj kind={kind} id={obj.EntityId} name=\"{name}\" targetable={obj.IsTargetable}");
+                }
             }
         }
         catch (Exception ex)

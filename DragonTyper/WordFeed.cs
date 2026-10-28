@@ -3,22 +3,17 @@ using System.Collections.Generic;
 using System.Linq;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
-using Dalamud.Game.ClientState.Objects.SubKinds;
-using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Plugin.Services;
-using FFXIVClientStructs.FFXIV.Client.UI;
-using FFXIVClientStructs.FFXIV.Component.GUI;
 using Lumina.Excel.Sheets;
-using AtkValueType = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType;
 
 namespace DragonTyper;
 
 /// <summary>
-/// Live word feed — Dalamud stand-in for Minion's KTGInput:GetData().
-/// 1) Visible KTGEWord text nodes (normal green balloons).
-/// 2) KTGInput ghost word (blue input bar) paired to empty balloon entities.
-/// 3) Sheet-backed (entity, wordId) number-array pairs for empty balloons only.
-/// Never greps random UI string arrays — that invented "Shinra" / "Price of Progress".
+/// Live word feed from on-screen KTGEWord balloon text only.
+/// KTGEWord is one pooled addon: Atk[1] is a shared "last updated" entity hint,
+/// not a per-word owner — never gate typing on that id alone.
+/// Do not scrape UI string/number arrays (invented Shinra / Price of Progress).
+/// Do not read KTGInput TextInput (that is our own SetText echo after submit).
 /// </summary>
 internal sealed unsafe class WordFeed : IDisposable
 {
@@ -123,75 +118,18 @@ internal sealed unsafe class WordFeed : IDisposable
             if (args is not AddonRequestedUpdateArgs)
                 return;
 
-            LoadSheet();
-
             var balloons = ReadBalloons();
             var found = new List<KtgInput.WordEntry>();
-            var ghost = ReadGhostFromInput();
 
             foreach (var b in balloons.Where(b => b.Texts.Count > 0))
             {
                 foreach (var text in b.Texts)
                 {
-                    // Balloon text is authoritative even if not in sheet (safety).
+                    // EntityId is only a soft hint (shared Atk[1] on the pooled addon).
                     found.Add(new KtgInput.WordEntry(b.EntityId, text));
                 }
             }
 
-            var emptyEntities = balloons
-                .Where(b => b.Texts.Count == 0 && b.EntityId != 0 && IsEnemyEntity(b.EntityId))
-                .Select(b => b.EntityId)
-                .Distinct()
-                .ToList();
-
-            // Minion GetData path: empty balloon + live word on KTGInput itself.
-            // Capture 223426: balloon Atk entity set, no text; KTGInput text = "bugaboo".
-            if (emptyEntities.Count > 0 && ghost.Count > 0)
-            {
-                if (emptyEntities.Count == 1)
-                {
-                    var entity = emptyEntities[0];
-                    foreach (var text in ghost)
-                        found.Add(new KtgInput.WordEntry(entity, text));
-                }
-                else
-                {
-                    // Multiple empty balloons: attach the ghost word to the nearest live enemy.
-                    var nearest = NearestEmptyEntity(emptyEntities);
-                    foreach (var text in ghost)
-                        found.Add(new KtgInput.WordEntry(nearest != 0 ? nearest : emptyEntities[0], text));
-                }
-            }
-            else if (balloons.Count == 0 && ghost.Count > 0)
-            {
-                // Input open, no balloon instances yet — still type the ghost word.
-                foreach (var text in ghost)
-                    found.Add(new KtgInput.WordEntry(0, text));
-            }
-
-            // Last resort for empty balloons: real (entity, wordId) number pairs only.
-            if (emptyEntities.Count > 0)
-            {
-                var sheetHits = new List<KtgInput.WordEntry>();
-                CollectSheetWordsForEntities(sheetHits, emptyEntities.ToHashSet());
-                found.AddRange(sheetHits);
-            }
-
-            found = Dedup(found);
-            if (found.Count == 0)
-                return;
-
-            // Keep balloon text, KTGInput ghost, or sheet-backed phrases — nothing else.
-            var balloonTexts = new HashSet<string>(
-                balloons.SelectMany(b => b.Texts),
-                StringComparer.OrdinalIgnoreCase);
-            var ghostSet = new HashSet<string>(ghost, StringComparer.OrdinalIgnoreCase);
-            found = found
-                .Where(w =>
-                    balloonTexts.Contains(w.Text)
-                    || ghostSet.Contains(w.Text)
-                    || sheetWordSet.Contains(w.Text))
-                .ToList();
             found = Dedup(found);
             if (found.Count == 0)
                 return;
@@ -200,8 +138,7 @@ internal sealed unsafe class WordFeed : IDisposable
             {
                 live = found;
                 liveAt = Environment.TickCount64;
-                lastNote =
-                    $"feed={found.Count} balloons={balloons.Count} empty={emptyEntities.Count} ghost={ghost.Count} via {args.AddonName}";
+                lastNote = $"feed={found.Count} balloons={balloons.Count} via {args.AddonName}";
             }
         }
         catch (Exception ex)
@@ -233,9 +170,9 @@ internal sealed unsafe class WordFeed : IDisposable
                 ulong entity = 0;
                 try
                 {
-                    var unit = (AtkUnitBase*)addon.Address;
+                    var unit = (FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)addon.Address;
                     if (unit->AtkValues != null && unit->AtkValuesCount > 1
-                        && unit->AtkValues[1].Type == AtkValueType.UInt)
+                        && unit->AtkValues[1].Type == FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType.UInt)
                         entity = unit->AtkValues[1].UInt;
                 }
                 catch
@@ -258,145 +195,6 @@ internal sealed unsafe class WordFeed : IDisposable
         }
 
         return list;
-    }
-
-    private static List<string> ReadGhostFromInput()
-    {
-        try
-        {
-            var addon = KtgInput.GetAddon();
-            return KtgInput.ReadGhostWordsFromInput(addon)
-                .Select(w => w.Text)
-                .Where(t => !string.IsNullOrWhiteSpace(t))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
-    private static ulong NearestEmptyEntity(List<ulong> entities)
-    {
-        try
-        {
-            var player = Plugin.ObjectTable.LocalPlayer;
-            if (player == null)
-                return 0;
-
-            ulong best = 0;
-            var bestDist = float.MaxValue;
-            foreach (var id in entities)
-            {
-                foreach (var obj in Plugin.ObjectTable)
-                {
-                    if (obj == null)
-                        continue;
-                    if (obj.EntityId != id && obj.GameObjectId != id)
-                        continue;
-                    if (obj is not IBattleChara battle || battle.IsDead || battle.CurrentHp == 0)
-                        continue;
-                    var dx = player.Position.X - battle.Position.X;
-                    var dz = player.Position.Z - battle.Position.Z;
-                    var d = dx * dx + dz * dz;
-                    if (d < bestDist)
-                    {
-                        bestDist = d;
-                        best = id;
-                    }
-                }
-            }
-
-            return best;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    private void CollectSheetWordsForEntities(List<KtgInput.WordEntry> into, HashSet<ulong> entities)
-    {
-        var module = RaptureAtkModule.Instance();
-        if (module == null)
-            return;
-
-        var holder = module->AtkArrayDataHolder;
-        var count = Math.Min((int)holder.NumberArrayCount, 200);
-        for (var i = 0; i < count; i++)
-        {
-            NumberArrayData* nad;
-            try
-            {
-                nad = module->GetNumberArrayData(i);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (nad == null || nad->IntArray == null || nad->Size <= 0)
-                continue;
-
-            var size = Math.Min(nad->Size, 64);
-            for (var s = 0; s + 1 < size; s++)
-            {
-                int a;
-                int b;
-                try
-                {
-                    a = nad->IntArray[s];
-                    b = nad->IntArray[s + 1];
-                }
-                catch
-                {
-                    break;
-                }
-
-                TryEntityWordPair(into, entities, a, b);
-                TryEntityWordPair(into, entities, b, a);
-            }
-        }
-    }
-
-    private void TryEntityWordPair(List<KtgInput.WordEntry> into, HashSet<ulong> entities, int maybeEntity, int maybeWord)
-    {
-        var entity = unchecked((uint)maybeEntity);
-        if (!entities.Contains(entity))
-            return;
-        if (maybeWord <= 0)
-            return;
-        if (!sheetWords.TryGetValue((uint)maybeWord, out var text))
-            return;
-        if (!KtgInput.IsMinigameWordPublic(text))
-            return;
-        into.Add(new KtgInput.WordEntry(entity, text));
-    }
-
-    private static bool IsEnemyEntity(ulong entityId)
-    {
-        if (entityId == 0)
-            return false;
-        try
-        {
-            foreach (var obj in Plugin.ObjectTable)
-            {
-                if (obj == null)
-                    continue;
-                if (obj.EntityId != entityId && obj.GameObjectId != entityId)
-                    continue;
-                if (obj is IPlayerCharacter)
-                    return false;
-                return obj is IBattleChara;
-            }
-        }
-        catch
-        {
-            // zone transition
-        }
-
-        return entityId is >= 0x40000000 and <= 0x4FFFFFFF;
     }
 
     private static List<KtgInput.WordEntry> Dedup(List<KtgInput.WordEntry> words)

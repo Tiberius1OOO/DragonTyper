@@ -185,11 +185,13 @@ public sealed class TyperEngine(Plugin plugin)
         emptyParseStreak = 0;
         LastError = null;
 
-        var text = Pick(words, now);
+        var text = Pick(words, now, out var onCooldown);
         if (text == null)
         {
-            // All words were recently submitted; wait for new ones.
-            status = $"Running. {words.Count} word(s) on cooldown";
+            // Pick only returns null when every candidate is in recent[].
+            status = onCooldown > 0
+                ? $"Running. {onCooldown} word(s) just typed, waiting"
+                : "Running. No typeable word";
             return;
         }
 
@@ -252,18 +254,18 @@ public sealed class TyperEngine(Plugin plugin)
     }
 
     /// <summary>
-    /// Same priority as Minion Typer.pick: casting add → nearest → bigger HP.
-    /// No unverified fallback — Minion returns nil rather than invent a word.
-    /// Sole exception: a single ghost word with no entity yet (input open, balloon not ready).
+    /// Prefer casting/nearest when Atk[1] happens to resolve to a live enemy.
+    /// KTGEWord Atk[1] is shared across all balloons — never require it.
+    /// Fallback: first on-screen balloon word not in recent[] (literal UI text only).
     /// </summary>
-    private string? Pick(List<KtgInput.WordEntry> words, long now)
+    private string? Pick(List<KtgInput.WordEntry> words, long now, out int onCooldown)
     {
         string? best = null;
         var bestCasting = false;
         var bestDistance = float.MaxValue;
         var bestHp = 0u;
-        string? ghostOnly = null;
-        var ghostCount = 0;
+        string? fallback = null;
+        onCooldown = 0;
 
         var player = Plugin.ObjectTable.LocalPlayer;
         var me = player?.Position ?? Vector3.Zero;
@@ -273,14 +275,16 @@ public sealed class TyperEngine(Plugin plugin)
             if (string.IsNullOrEmpty(word.Text))
                 continue;
             if (recent.TryGetValue(word.Text, out var until) && now < until)
-                continue;
-
-            if (word.EntityId == 0)
             {
-                ghostCount++;
-                ghostOnly ??= word.Text;
+                onCooldown++;
                 continue;
             }
+
+            // On-screen balloon text is always typeable; entity is optional priority.
+            fallback ??= word.Text;
+
+            if (word.EntityId == 0)
+                continue;
 
             var obj = FindObject(word.EntityId);
             if (obj is not IBattleChara battle)
@@ -312,11 +316,7 @@ public sealed class TyperEngine(Plugin plugin)
             bestHp = maxHp;
         }
 
-        if (best != null)
-            return best;
-
-        // Only when nothing has a live entity: allow the single KTGInput ghost word.
-        return ghostCount == 1 ? ghostOnly : null;
+        return best ?? fallback;
     }
 
     private static IGameObject? FindObject(ulong entityId)
