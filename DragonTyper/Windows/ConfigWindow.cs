@@ -16,14 +16,14 @@ public sealed class ConfigWindow : Window, IDisposable
         : base("DragonTyper###DragonTyperConfig")
     {
         this.plugin = plugin;
-        Size = new Vector2(460, 480);
+        Size = new Vector2(440, 520);
         SizeCondition = ImGuiCond.FirstUseEver;
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(400, 420),
-            MaximumSize = new Vector2(720, 900),
+            MinimumSize = new Vector2(380, 460),
+            MaximumSize = new Vector2(700, 900),
         };
-        Flags = ImGuiWindowFlags.NoScrollbar;
+        Flags = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
         RespectCloseHotkey = true;
     }
 
@@ -44,11 +44,17 @@ public sealed class ConfigWindow : Window, IDisposable
 
         DrawHeader();
         ImGui.Spacing();
-        DrawActiveCard(cfg, typer);
+        DrawStartStop(cfg, typer);
         ImGui.Spacing();
-        DrawDelayCard(cfg);
+        ImGui.Separator();
         ImGui.Spacing();
-        DrawStatusCard(typer);
+        DrawTiming(cfg);
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        DrawStatus(typer);
+        ImGui.Spacing();
+        ImGui.Separator();
         ImGui.Spacing();
         DrawFooter(typer);
     }
@@ -56,7 +62,7 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawHeader()
     {
         var wrap = logoTexture?.GetWrapOrEmpty();
-        const float logoSize = 76f;
+        const float logoSize = 72f;
 
         if (wrap != null && wrap.Handle != default)
         {
@@ -67,7 +73,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BeginGroup();
         ImGui.Dummy(new Vector2(0, 10));
         ImGui.TextColored(Theme.Gold, "DragonTyper");
-        ImGui.TextColored(Theme.TextMuted, "Keybound Brawler auto typer");
+        ImGui.TextColored(Theme.TextMuted, "Press Start once, then it types the whole minigame");
         ImGui.EndGroup();
 
         ImGui.Dummy(new Vector2(0, 4));
@@ -77,49 +83,43 @@ public sealed class ConfigWindow : Window, IDisposable
         var cyan = ImGui.ColorConvertFloat4ToU32(Theme.Cyan);
         var fade = ImGui.ColorConvertFloat4ToU32(new Vector4(Theme.Gold.X, Theme.Gold.Y, Theme.Gold.Z, 0.05f));
         draw.AddRectFilledMultiColor(p, p + new Vector2(width * 0.62f, 2.5f), cyan, fade, fade, cyan);
-        ImGui.Dummy(new Vector2(0, 10));
+        ImGui.Dummy(new Vector2(0, 8));
     }
 
-    private void DrawActiveCard(Configuration cfg, TyperEngine typer)
+    private void DrawStartStop(Configuration cfg, TyperEngine typer)
     {
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.08f, 0.10f, 0.15f, 0.95f));
-        ImGui.BeginChild("##activeCard", new Vector2(0, 92), true);
-
-        var active = cfg.Active;
-        var pulse = active ? Theme.Pulse(2.6f, 0.55f, 1f) : 1f;
-        var accent = active
+        var running = cfg.Active;
+        var pulse = running ? Theme.Pulse(2.6f, 0.55f, 1f) : 1f;
+        var accent = running
             ? new Vector4(Theme.ActiveOn.X, Theme.ActiveOn.Y, Theme.ActiveOn.Z, pulse)
             : Theme.ActiveOff;
 
-        ImGui.TextColored(accent, active ? "●  LIVE" : "○  IDLE");
-        ImGui.SameLine();
-        ImGui.TextColored(Theme.TextMuted, active
-            ? "Typing when the Keybound Brawler input is open"
-            : "Passive until you enable Active");
+        ImGui.TextColored(accent, running ? "●  RUNNING" : "○  STOPPED");
+        ImGui.TextColored(Theme.TextMuted, running
+            ? "Auto-typing words until you press Stop"
+            : "Start when you are ready, then play the duty");
 
         ImGui.Spacing();
-        var buttonLabel = active ? "Disable Active" : "Enable Active";
-        var btnColor = active ? Theme.ActiveOff : Theme.ActiveOn;
-        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(btnColor.X, btnColor.Y, btnColor.Z, 0.78f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(btnColor.X, btnColor.Y, btnColor.Z, 0.95f));
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, btnColor);
-        if (ImGui.Button(buttonLabel, new Vector2(-1, 36)))
+        var label = running ? "Stop" : "Start";
+        var color = running ? Theme.ActiveOff : Theme.ActiveOn;
+        ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(color.X, color.Y, color.Z, 0.82f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(color.X, color.Y, color.Z, 0.95f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, color);
+        if (ImGui.Button(label, new Vector2(-1, 40)))
         {
-            cfg.Active = !active;
+            cfg.Active = !running;
             cfg.Save();
             typer.ResetIdle();
+            Plugin.ChatGui.Print(cfg.Active
+                ? "[DragonTyper] Started. Will type words for the whole minigame."
+                : "[DragonTyper] Stopped.");
         }
 
         ImGui.PopStyleColor(3);
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
     }
 
-    private void DrawDelayCard(Configuration cfg)
+    private void DrawTiming(Configuration cfg)
     {
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.08f, 0.10f, 0.15f, 0.95f));
-        ImGui.BeginChild("##delayCard", new Vector2(0, 152), true);
-
         ImGui.TextColored(Theme.Cyan, "Timing");
         ImGui.TextColored(Theme.TextMuted, "Each wait is randomized by ±20%");
 
@@ -143,16 +143,10 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.TextColored(Theme.TextMuted, "28+ characters wait up to 2x (max 5s)");
-
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
     }
 
-    private void DrawStatusCard(TyperEngine typer)
+    private void DrawStatus(TyperEngine typer)
     {
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.08f, 0.10f, 0.15f, 0.95f));
-        ImGui.BeginChild("##statusCard", new Vector2(0, 118), true);
-
         ImGui.TextColored(Theme.Gold, "Status");
         ImGui.TextWrapped(typer.Status);
 
@@ -161,28 +155,25 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.Spacing();
             ImGui.TextColored(Theme.ActiveOff, "Last error");
             ImGui.TextWrapped(typer.LastError);
-            ImGui.TextColored(Theme.TextMuted, "Details are in /xllog (filter: DragonTyper)");
+            ImGui.TextColored(Theme.TextMuted, "Details: /xllog  filter DragonTyper");
         }
 
         ImGui.Spacing();
         ImGui.TextColored(Theme.Cyan, $"Hits  {typer.Hits}");
         ImGui.SameLine(0, 24);
         ImGui.TextColored(Theme.TextMuted, $"Misses  {typer.Misses}");
-
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
     }
 
     private void DrawFooter(TyperEngine typer)
     {
-        if (ImGui.Button("Dump KTGInput to log", new Vector2(190, 0)))
+        if (ImGui.Button("Dump live data to log", new Vector2(200, 0)))
         {
             typer.DumpAddon();
             Plugin.ChatGui.Print("[DragonTyper] Dump written to /xllog.");
         }
 
         ImGui.SameLine();
-        ImGui.TextColored(Theme.TextMuted, "/dragontyper   on | off | toggle | dump");
+        ImGui.TextColored(Theme.TextMuted, "/dragontyper  start|stop|dump");
     }
 
     private void EnsureLogo()

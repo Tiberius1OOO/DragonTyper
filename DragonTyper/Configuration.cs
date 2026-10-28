@@ -6,7 +6,7 @@ public sealed class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 1;
 
-    /// <summary>Master switch. Must be turned on before any typing happens.</summary>
+    /// <summary>Start/Stop. When true, types words for the whole minigame until stopped.</summary>
     public bool Active { get; set; }
 
     /// <summary>Base wait before submitting a word, in milliseconds.</summary>

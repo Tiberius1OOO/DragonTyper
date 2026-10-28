@@ -21,6 +21,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
+    [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
 
     public Configuration Configuration { get; }
     public TyperEngine Typer { get; }
@@ -36,9 +37,11 @@ public sealed class Plugin : IDalamudPlugin
         configWindow = new ConfigWindow(this);
         windowSystem.AddWindow(configWindow);
 
+        KtgInput.Register(AddonLifecycle);
+
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Open DragonTyper. /dragontyper on|off|toggle|dump",
+            HelpMessage = "Open DragonTyper. /dragontyper start|stop|toggle|dump",
         });
 
         Framework.Update += OnFrameworkUpdate;
@@ -48,7 +51,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var version = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "unknown";
         Log.Information(
-            "DragonTyper {Version} loaded (solo, no other plugin dependencies). Use /dragontyper. Active starts off.",
+            "DragonTyper {Version} loaded (solo). Press Start once to auto-type the whole minigame.",
             version);
     }
 
@@ -58,6 +61,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= windowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfig;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleConfig;
+        KtgInput.Unregister(AddonLifecycle);
         windowSystem.RemoveAllWindows();
         configWindow.Dispose();
         CommandManager.RemoveHandler(CommandName);
@@ -97,17 +101,19 @@ public sealed class Plugin : IDalamudPlugin
         switch (arg)
         {
             case "on":
-                SetActive(true);
+            case "start":
+                SetRunning(true);
                 break;
             case "off":
-                SetActive(false);
+            case "stop":
+                SetRunning(false);
                 break;
             case "toggle":
-                SetActive(!Configuration.Active);
+                SetRunning(!Configuration.Active);
                 break;
             case "dump":
                 Typer.DumpAddon();
-                ChatGui.Print("[DragonTyper] Addon dump written to /xllog.");
+                ChatGui.Print("[DragonTyper] Dump written to /xllog.");
                 break;
             default:
                 ToggleConfig();
@@ -115,13 +121,13 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void SetActive(bool active)
+    private void SetRunning(bool running)
     {
-        Configuration.Active = active;
+        Configuration.Active = running;
         Configuration.Save();
         Typer.ResetIdle();
-        ChatGui.Print(active
-            ? "[DragonTyper] Active. Will type when the Keybound Brawler input is open."
-            : "[DragonTyper] Inactive. Passive.");
+        ChatGui.Print(running
+            ? "[DragonTyper] Started. Will type words for the whole minigame."
+            : "[DragonTyper] Stopped.");
     }
 }

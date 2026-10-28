@@ -6,22 +6,22 @@ using Dalamud.Game.ClientState.Objects.Types;
 namespace DragonTyper;
 
 /// <summary>
-/// Picks and submits Keybound Brawler words while Active is on and the input window accepts typing.
+/// After Start: types Keybound Brawler words until Stop or you leave the duty.
 /// </summary>
 public sealed class TyperEngine(Plugin plugin)
 {
     private const int CheckEveryMs = 100;
     private const float Jitter = 0.20f;
-    private const int RecentForMs = 3000;
+    private const int RecentForMs = 2500;
     private const int GuardMs = 500;
     private const uint BigHp = 1000;
     private const int LongWordChars = 28;
     private const int LongMaxMs = 5000;
-    private const int WarnCooldownMs = 5000;
+    private const int WarnCooldownMs = 8000;
 
     private static readonly HashSet<uint> LetterlockCasts = [49529, 49532, 49702];
 
-    private readonly Dictionary<string, long> recent = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> recent = new(StringComparer.OrdinalIgnoreCase);
     private readonly Random random = new();
 
     private long nextCheckAt;
@@ -31,6 +31,7 @@ public sealed class TyperEngine(Plugin plugin)
     private string status = "Idle";
     private bool sawAddon;
     private bool loggedSessionStart;
+    private int emptyParseStreak;
 
     public string Status => status;
     public string? LastError { get; private set; }
@@ -45,8 +46,9 @@ public sealed class TyperEngine(Plugin plugin)
         recent.Clear();
         sawAddon = false;
         loggedSessionStart = false;
+        emptyParseStreak = 0;
         LastError = null;
-        status = plugin.Configuration.Active ? "Waiting for Keybound Brawler input" : "Inactive";
+        status = plugin.Configuration.Active ? "Started. Waiting for the minigame..." : "Stopped";
     }
 
     public void DumpAddon()
@@ -54,22 +56,15 @@ public sealed class TyperEngine(Plugin plugin)
         try
         {
             var addon = KtgInput.GetAddon();
-            if (addon.IsNull)
-            {
-                Plugin.Log.Warning("Dump requested but KTGInput is not open/ready/visible.");
-                LastError = "Dump failed: KTGInput not open";
-                return;
-            }
-
             var dump = KtgInput.Dump(addon);
-            Plugin.Log.Information("=== KTGInput dump begin ===");
+            Plugin.Log.Information("=== DragonTyper dump begin ===");
             foreach (var line in dump.Split('\n'))
             {
                 if (!string.IsNullOrWhiteSpace(line))
                     Plugin.Log.Information("[dump] {Line}", line.TrimEnd());
             }
 
-            Plugin.Log.Information("=== KTGInput dump end (AtkValuesCount={Count}) ===", addon.AtkValuesCount);
+            Plugin.Log.Information("=== DragonTyper dump end ===");
         }
         catch (Exception ex)
         {
@@ -103,7 +98,7 @@ public sealed class TyperEngine(Plugin plugin)
         if (!plugin.Configuration.Active)
         {
             waitFrom = null;
-            status = "Inactive";
+            status = "Stopped";
             return;
         }
 
@@ -111,7 +106,7 @@ public sealed class TyperEngine(Plugin plugin)
         {
             loggedSessionStart = true;
             Plugin.Log.Information(
-                "Active session started. Delay={Delay}ms LongSentenceDelay={Long}",
+                "Start pressed. Delay={Delay}ms LongSentence={Long}. Will type until Stop or duty end.",
                 plugin.Configuration.WordDelayMs,
                 plugin.Configuration.LongSentenceDelay);
         }
@@ -121,12 +116,12 @@ public sealed class TyperEngine(Plugin plugin)
         {
             if (sawAddon)
             {
-                Plugin.Log.Information("KTGInput closed. Returning to wait state.");
+                Plugin.Log.Information("KTGInput closed (wave/end). Still running until Stop.");
                 sawAddon = false;
             }
 
             waitFrom = null;
-            status = "Waiting for Keybound Brawler input";
+            status = "Running. Waiting for next words...";
             return;
         }
 
@@ -134,28 +129,23 @@ public sealed class TyperEngine(Plugin plugin)
         {
             sawAddon = true;
             Plugin.Log.Information(
-                "KTGInput opened. AtkValuesCount={Count} Ready={Ready} Visible={Visible}",
+                "KTGInput open. AtkValues={Count} cachedWords={Cached}",
                 addon.AtkValuesCount,
-                addon.IsReady,
-                addon.IsVisible);
+                KtgInput.CachedWords.Count);
         }
 
         if (!KtgInput.TryGetInputEnabled(addon, out var enabled))
         {
-            status = "Cannot read input enabled flag";
-            LastError = "KTGInput AtkValues too short or unreadable (index 2)";
-            PluginLogHelpers.WarnOnce(
-                "enabled-unreadable",
-                WarnCooldownMs,
-                "Cannot read KTGInput enabled flag. AtkValuesCount={Count}. Run /dragontyper dump.",
-                addon.AtkValuesCount);
+            status = "Running. Input flag unreadable";
+            LastError = "Cannot read KTGInput enabled flag (AtkValue[2])";
+            PluginLogHelpers.WarnOnce("enabled-unreadable", WarnCooldownMs, "Cannot read enabled flag. AtkValuesCount={Count}", addon.AtkValuesCount);
             return;
         }
 
         if (!enabled)
         {
             waitFrom = null;
-            status = "Letterlock: holding";
+            status = "Running. Letterlock hold";
             return;
         }
 
@@ -168,35 +158,37 @@ public sealed class TyperEngine(Plugin plugin)
         {
             LastError = $"Word read failed: {ex.Message}";
             status = "Error reading words";
-            PluginLogHelpers.ErrorOnce("read-words", WarnCooldownMs, ex, "Failed to read words from KTGInput");
+            PluginLogHelpers.ErrorOnce("read-words", WarnCooldownMs, ex, "Failed to read words");
             return;
         }
 
         if (words.Count == 0)
         {
             waitFrom = null;
-            status = "No words parsed from KTGInput";
-            LastError = "Addon open but no words parsed. Layout may have changed.";
-            PluginLogHelpers.WarnOnce(
-                "no-words-parsed",
-                WarnCooldownMs,
-                "KTGInput is open and enabled, but no words were parsed (AtkValuesCount={Count}). Run /dragontyper dump.",
-                addon.AtkValuesCount);
+            emptyParseStreak++;
+            status = "Running. No words visible yet";
+            if (emptyParseStreak >= 30)
+            {
+                LastError = "No words parsed while input is open. Use Dump for live arrays.";
+                PluginLogHelpers.WarnOnce(
+                    "no-words-parsed",
+                    WarnCooldownMs,
+                    "Input open/enabled but no words parsed (AtkValues={Count}, cache={Cache}). Press Dump.",
+                    addon.AtkValuesCount,
+                    KtgInput.CachedWords.Count);
+            }
+
             return;
         }
+
+        emptyParseStreak = 0;
+        LastError = null;
 
         var text = Pick(words, now);
         if (text == null)
         {
-            waitFrom = null;
-            status = "No matching enemy for available words";
-            PluginLogHelpers.WarnOnce(
-                "no-match",
-                WarnCooldownMs,
-                "Parsed {Count} word(s) but none matched a living targetable enemy. First='{First}' EntityId={EntityId}",
-                words.Count,
-                words[0].Text,
-                words[0].EntityId);
+            // All words were recently submitted; wait for new ones.
+            status = $"Running. {words.Count} word(s) on cooldown";
             return;
         }
 
@@ -207,13 +199,13 @@ public sealed class TyperEngine(Plugin plugin)
         var waitStarted = waitFrom ?? now;
         if (now < waitStarted + delay)
         {
-            status = $"Waiting {waitStarted + delay - now}ms: {text}";
+            status = $"Typing soon ({waitStarted + delay - now}ms): {text}";
             return;
         }
 
         if (holdUntil is long hold && now < hold)
         {
-            status = "Holding for Letterlock cast";
+            status = "Running. Letterlock cast hold";
             return;
         }
 
@@ -221,8 +213,7 @@ public sealed class TyperEngine(Plugin plugin)
         if (left is float remaining && remaining <= GuardMs)
         {
             holdUntil = now + (long)Math.Max(0, remaining) + GuardMs;
-            status = "Holding for Letterlock cast";
-            Plugin.Log.Debug("Letterlock cast guard for {Ms}ms", holdUntil - now);
+            status = "Running. Letterlock cast hold";
             return;
         }
 
@@ -232,19 +223,15 @@ public sealed class TyperEngine(Plugin plugin)
         if (KtgInput.SubmitWord(addon, text))
         {
             Hits++;
-            LastError = null;
             status = $"Typed: {text}";
             Plugin.Log.Information("Typed '{Text}' (hits={Hits})", text, Hits);
         }
         else
         {
             Misses++;
-            LastError = $"SubmitWord failed for '{text}'";
+            LastError = $"Submit failed for '{text}'";
             status = $"Missed: {text}";
-            Plugin.Log.Error(
-                "SubmitWord failed for '{Text}' (misses={Misses}). Check /xllog for FireCallback details.",
-                text,
-                Misses);
+            Plugin.Log.Error("SubmitWord failed for '{Text}' (misses={Misses})", text, Misses);
         }
     }
 
@@ -269,21 +256,22 @@ public sealed class TyperEngine(Plugin plugin)
         var bestCasting = false;
         var bestDistance = float.MaxValue;
         var bestHp = 0u;
+        string? fallback = null;
 
         var player = Plugin.ObjectTable.LocalPlayer;
-        if (player == null)
-        {
-            PluginLogHelpers.WarnOnce("no-player", WarnCooldownMs, "LocalPlayer is null while Active.");
-            return null;
-        }
-
-        var me = player.Position;
+        var me = player?.Position ?? Vector3.Zero;
 
         foreach (var word in words)
         {
             if (string.IsNullOrEmpty(word.Text))
                 continue;
             if (recent.TryGetValue(word.Text, out var until) && now < until)
+                continue;
+
+            fallback ??= word.Text;
+
+            // Words without entity id: still valid (array/text-node path).
+            if (word.EntityId == 0)
                 continue;
 
             var obj = FindObject(word.EntityId);
@@ -294,7 +282,7 @@ public sealed class TyperEngine(Plugin plugin)
 
             var maxHp = battle.MaxHp;
             var isCasting = maxHp < BigHp && IsCasting(battle);
-            var distance = Distance2D(me, battle.Position);
+            var distance = player == null ? 0f : Distance2D(me, battle.Position);
 
             var better = best == null;
             if (best != null)
@@ -316,7 +304,7 @@ public sealed class TyperEngine(Plugin plugin)
             bestHp = maxHp;
         }
 
-        return best;
+        return best ?? fallback;
     }
 
     private static IGameObject? FindObject(ulong entityId)
@@ -346,7 +334,6 @@ public sealed class TyperEngine(Plugin plugin)
     private float? LetterlockCastLeftMs()
     {
         float? soonest = null;
-
         foreach (var obj in Plugin.ObjectTable)
         {
             if (obj is not IBattleChara battle || battle.IsDead)
