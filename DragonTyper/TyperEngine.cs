@@ -129,9 +129,10 @@ public sealed class TyperEngine(Plugin plugin)
         {
             sawAddon = true;
             Plugin.Log.Information(
-                "KTGInput open. AtkValues={Count} cachedWords={Cached}",
+                "KTGInput open. AtkValues={Count} cachedWords={Cached} source={Source}",
                 addon.AtkValuesCount,
-                KtgInput.CachedWords.Count);
+                KtgInput.CachedWords.Count,
+                KtgInput.LastSource);
         }
 
         if (!KtgInput.TryGetInputEnabled(addon, out var enabled))

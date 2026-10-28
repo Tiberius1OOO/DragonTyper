@@ -21,7 +21,6 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
-    [PluginService] internal static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
 
     public Configuration Configuration { get; }
     public TyperEngine Typer { get; }
@@ -37,8 +36,6 @@ public sealed class Plugin : IDalamudPlugin
         configWindow = new ConfigWindow(this);
         windowSystem.AddWindow(configWindow);
 
-        KtgInput.Register(AddonLifecycle);
-
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage = "Open DragonTyper. /dragontyper start|stop|toggle|dump",
@@ -51,7 +48,7 @@ public sealed class Plugin : IDalamudPlugin
 
         var version = typeof(Plugin).Assembly.GetName().Version?.ToString() ?? "unknown";
         Log.Information(
-            "DragonTyper {Version} loaded (solo). Press Start once to auto-type the whole minigame.",
+            "DragonTyper {Version} loaded (solo, crash-safe word reader). Press Start once to auto-type the whole minigame.",
             version);
     }
 
@@ -61,7 +58,6 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= windowSystem.Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfig;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleConfig;
-        KtgInput.Unregister(AddonLifecycle);
         windowSystem.RemoveAllWindows();
         configWindow.Dispose();
         CommandManager.RemoveHandler(CommandName);
