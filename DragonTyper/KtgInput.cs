@@ -1,24 +1,30 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
+using Dalamud.Game.ClientState.Objects.SubKinds;
+using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.NativeWrapper;
+using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
-using AtkValueType = Dalamud.Game.NativeWrapper.AtkValueType;
+using CsAtkValueType = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType;
 using CStringPointer = InteropGenerator.Runtime.CStringPointer;
 
 namespace DragonTyper;
 
 /// <summary>
-/// Safe Keybound Brawler word reader.
-/// KTGInput only holds input flags. Live words come from Agent KTGHud's addon / NamePlate-like UI.
+/// Keybound Brawler word reader.
+/// KTGInput only holds input flags. Live words live on KTGEWord (and related KTG* addons).
+/// NamePlate is intentionally ignored — it is full of player/pet names.
 /// </summary>
 internal static unsafe class KtgInput
 {
     public const string AddonName = "KTGInput";
-    private const int AgentKtgHud = (int)AgentId.KTGHud;         // 397
-    private const int AgentKtgResult = (int)AgentId.KTGResult;   // 401
+    public const string WordAddonName = "KTGEWord";
+    private const int AgentKtgHud = (int)AgentId.KTGHud;
+    private const int AgentKtgResult = (int)AgentId.KTGResult;
 
     public readonly record struct WordEntry(ulong EntityId, string Text);
 
@@ -30,7 +36,10 @@ internal static unsafe class KtgInput
     private static readonly HashSet<string> NoiseWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "MP", "CP", "GP", "TP", "EP", "HP", "Limit Break", "Support", "Fair Skies",
-        "Playing Recorded Duty", "Recording Duty", "Bard", "Phoenix",
+        "Playing Recorded Duty", "Recording Duty", "Bard", "Phoenix", "SCORE",
+        "TYPING FEVER!", "TYPING FEVER", "Duty Information", "In Duty", "Viewing Cutscene",
+        "The Gold Saucer", "Immortal Flames", "Order of the Twin Adder", "Maelstrom",
+        "Defeat the airbuster", "The reinforcements fade...", "Miss", "Reflect", "Reflected",
     };
 
     public static IReadOnlyList<WordEntry> CachedWords
@@ -63,9 +72,9 @@ internal static unsafe class KtgInput
 
         enabled = value.ValueType switch
         {
-            AtkValueType.Bool => value.TryGet<bool>(out var b) && b,
-            AtkValueType.Int => value.TryGet<int>(out var i) && i != 0,
-            AtkValueType.UInt => value.TryGet<uint>(out var u) && u != 0,
+            Dalamud.Game.NativeWrapper.AtkValueType.Bool => value.TryGet<bool>(out var b) && b,
+            Dalamud.Game.NativeWrapper.AtkValueType.Int => value.TryGet<int>(out var i) && i != 0,
+            Dalamud.Game.NativeWrapper.AtkValueType.UInt => value.TryGet<uint>(out var u) && u != 0,
             _ => AsBool(value.GetValue()),
         };
         return true;
@@ -73,31 +82,31 @@ internal static unsafe class KtgInput
 
     public static List<WordEntry> ReadWords(AtkUnitBasePtr inputAddon)
     {
-        // 1) Agent KTGHud addon (word balloons / HUD for the minigame).
-        var fromHud = ReadWordsFromAgentAddon(AgentKtgHud, "AgentKTGHud");
-        if (fromHud.Count > 0)
-            return fromHud;
+        // 1) KTGEWord — enemy word balloons ("Bladesman of Legend", etc.).
+        var fromWord = ReadWordsFromNamedAddon(WordAddonName, "KTGEWord");
+        if (fromWord.Count > 0)
+            return fromWord;
 
-        // 2) NamePlate string array (bubbles sometimes ride nameplates).
-        var fromPlates = ReadWordsFromStringArray(StringArrayType.NamePlate, "NamePlate");
-        if (fromPlates.Count > 0)
-            return fromPlates;
+        // 2) Any other loaded KTG*Word* / Type addon (not Input / Hud chrome).
+        var fromKtg = ReadWordsFromLoadedKtgWordAddons();
+        if (fromKtg.Count > 0)
+            return fromKtg;
 
-        // 3) KTGInput itself (usually empty, but cheap).
+        // 3) Raw string arrays that look like minigame words (never NamePlate).
+        var fromArrays = ReadWordsFromRawStringArrays();
+        if (fromArrays.Count > 0)
+            return fromArrays;
+
+        // 4) KTGInput text nodes / AtkValues (usually empty).
         if (!inputAddon.IsNull)
         {
-            var local = ReadTextNodesFromAddon(inputAddon, 128);
+            var local = CollectFromAddon(inputAddon, includeInvisible: true);
             if (local.Count > 0)
             {
-                StoreCache(local, "KTGInput text nodes");
+                StoreCache(local, "KTGInput");
                 return local;
             }
         }
-
-        // 4) Any loaded addon whose name contains KTG (safe unit-list scan, dump-validated path).
-        var fromAny = ReadWordsFromLoadedKtgAddons();
-        if (fromAny.Count > 0)
-            return fromAny;
 
         lock (Gate)
         {
@@ -108,70 +117,30 @@ internal static unsafe class KtgInput
         return [];
     }
 
-    private static List<WordEntry> ReadWordsFromAgentAddon(int agentId, string label)
+    private static List<WordEntry> ReadWordsFromNamedAddon(string name, string label)
     {
         try
         {
-            var agent = Plugin.GameGui.GetAgentById(agentId);
-            if (agent.IsNull || !agent.IsAgentActive)
-                return [];
-
-            var addon = agent.Addon;
+            var addon = Plugin.GameGui.GetAddonByName(name);
             if (addon.IsNull || !addon.IsVisible)
                 return [];
 
-            var words = ReadTextNodesFromAddon(addon, 400);
-            // Also AtkValues strings on that addon.
-            words.AddRange(ReadAtkValueStrings(addon));
-
-            words = Deduplicate(words);
+            var words = CollectFromAddon(addon, includeInvisible: true);
             if (words.Count > 0)
             {
-                StoreCache(words, $"{label} addon={addon.Name}");
+                StoreCache(words, label);
                 return words;
             }
         }
         catch (Exception ex)
         {
-            PluginLogHelpers.WarnOnce($"agent-{agentId}", 5000, "Agent {Id} read failed: {Message}", agentId, ex.Message);
+            PluginLogHelpers.WarnOnce($"addon-{name}", 5000, "Addon {Name} read failed: {Message}", name, ex.Message);
         }
 
         return [];
     }
 
-    private static List<WordEntry> ReadWordsFromStringArray(StringArrayType type, string label)
-    {
-        var words = new List<WordEntry>();
-        try
-        {
-            var stage = AtkStage.Instance();
-            if (stage == null)
-                return words;
-
-            var sad = stage->GetStringArrayData(type);
-            if (sad == null || sad->Size <= 0 || sad->Size > 512 || sad->StringArray == null)
-                return words;
-
-            for (var i = 0; i < sad->Size; i++)
-            {
-                var text = ReadCString(sad->StringArray[i]);
-                if (IsTargetWord(text))
-                    words.Add(new WordEntry(0, text!.Trim()));
-            }
-
-            words = Deduplicate(words);
-            if (words.Count > 0)
-                StoreCache(words, label);
-        }
-        catch (Exception ex)
-        {
-            PluginLogHelpers.WarnOnce($"array-{type}", 5000, "StringArray {Type} read failed: {Message}", type, ex.Message);
-        }
-
-        return words;
-    }
-
-    private static List<WordEntry> ReadWordsFromLoadedKtgAddons()
+    private static List<WordEntry> ReadWordsFromLoadedKtgWordAddons()
     {
         var words = new List<WordEntry>();
         try
@@ -182,26 +151,71 @@ internal static unsafe class KtgInput
                     continue;
                 if (name.Equals(AddonName, StringComparison.OrdinalIgnoreCase))
                     continue;
+                if (name.Equals(WordAddonName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                // Skip chrome / gauges / logs — keep Word / Type / Enemy balloons.
+                var keep = name.Contains("Word", StringComparison.OrdinalIgnoreCase)
+                           || name.Contains("Type", StringComparison.OrdinalIgnoreCase)
+                           || name.Contains("Enemy", StringComparison.OrdinalIgnoreCase);
+                if (!keep)
+                    continue;
 
                 var addon = Plugin.GameGui.GetAddonByName(name);
                 if (addon.IsNull || !addon.IsVisible)
                     continue;
 
-                var found = ReadTextNodesFromAddon(addon, 300);
-                found.AddRange(ReadAtkValueStrings(addon));
-                if (found.Count == 0)
-                    continue;
-
-                words.AddRange(found);
+                words.AddRange(CollectFromAddon(addon, includeInvisible: true));
             }
 
-            words = Deduplicate(words);
+            words = FilterAndDedup(words);
             if (words.Count > 0)
-                StoreCache(words, "loaded KTG* addons");
+                StoreCache(words, "loaded KTG word addons");
         }
         catch (Exception ex)
         {
-            PluginLogHelpers.WarnOnce("ktg-enum", 5000, "KTG addon enum failed: {Message}", ex.Message);
+            PluginLogHelpers.WarnOnce("ktg-word-enum", 5000, "KTG word addon enum failed: {Message}", ex.Message);
+        }
+
+        return words;
+    }
+
+    private static List<WordEntry> ReadWordsFromRawStringArrays()
+    {
+        var words = new List<WordEntry>();
+        try
+        {
+            var module = RaptureAtkModule.Instance();
+            if (module == null)
+                return words;
+
+            var holder = module->AtkArrayDataHolder;
+            var count = Math.Min((int)holder.StringArrayCount, 256);
+            // NamePlate is usually a known enum index — skip by content filter instead.
+            for (var i = 0; i < count; i++)
+            {
+                var sad = module->GetStringArrayData(i);
+                if (sad == null || sad->Size <= 0 || sad->Size > 512 || sad->StringArray == null)
+                    continue;
+
+                // Skip huge chrome arrays and NamePlate-sized player lists.
+                if (sad->Size > 120)
+                    continue;
+
+                for (var s = 0; s < sad->Size; s++)
+                {
+                    var text = ReadCString(sad->StringArray[s]);
+                    if (IsMinigameWord(text))
+                        words.Add(new WordEntry(0, text!.Trim()));
+                }
+            }
+
+            words = FilterAndDedup(words);
+            if (words.Count > 0)
+                StoreCache(words, "raw StringArray");
+        }
+        catch (Exception ex)
+        {
+            PluginLogHelpers.WarnOnce("raw-arrays", 5000, "Raw string array read failed: {Message}", ex.Message);
         }
 
         return words;
@@ -211,10 +225,21 @@ internal static unsafe class KtgInput
     {
         lock (Gate)
         {
-            cachedWords = Deduplicate(words);
+            cachedWords = FilterAndDedup(words);
             lastCacheAt = Environment.TickCount64;
             lastSource = source;
         }
+    }
+
+    private static List<WordEntry> CollectFromAddon(AtkUnitBasePtr addon, bool includeInvisible)
+    {
+        var words = new List<WordEntry>();
+        if (addon.IsNull)
+            return words;
+
+        words.AddRange(ReadAtkValueStrings(addon));
+        words.AddRange(ReadTextNodesFromAddon(addon, 500, includeInvisible));
+        return FilterAndDedup(words);
     }
 
     private static List<WordEntry> ReadAtkValueStrings(AtkUnitBasePtr addon)
@@ -223,23 +248,68 @@ internal static unsafe class KtgInput
         if (addon.IsNull)
             return words;
 
-        foreach (var value in addon.AtkValues)
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || unit->AtkValues == null || unit->AtkValuesCount == 0)
+            return words;
+
+        var count = Math.Min((int)unit->AtkValuesCount, 64);
+        for (var i = 0; i < count; i++)
         {
             try
             {
-                if (value.GetValue() is string s && IsTargetWord(s))
-                    words.Add(new WordEntry(0, s.Trim()));
+                CollectAtkValueStrings(&unit->AtkValues[i], words, depth: 0);
             }
             catch
             {
-                // ignore
+                // ignore one bad slot
             }
         }
 
         return words;
     }
 
-    private static List<WordEntry> ReadTextNodesFromAddon(AtkUnitBasePtr addon, int maxNodes)
+    private static void CollectAtkValueStrings(AtkValue* value, List<WordEntry> words, int depth)
+    {
+        if (value == null || depth > 3)
+            return;
+
+        var type = value->Type;
+        if (type is CsAtkValueType.String or CsAtkValueType.ManagedString or CsAtkValueType.ConstString)
+        {
+            var text = value->String.ToString();
+            if (IsMinigameWord(text))
+                words.Add(new WordEntry(0, text.Trim()));
+            return;
+        }
+
+        if (type == CsAtkValueType.WideString)
+        {
+            var text = Marshal.PtrToStringUni((nint)value->WideString);
+            if (IsMinigameWord(text))
+                words.Add(new WordEntry(0, text!.Trim()));
+            return;
+        }
+
+        if (type is CsAtkValueType.Vector or CsAtkValueType.ManagedVector)
+        {
+            try
+            {
+                var size = value->GetVectorSize();
+                for (uint i = 0; i < size && i < 32; i++)
+                {
+                    var child = value->GetVectorValue(i);
+                    if (child != null)
+                        CollectAtkValueStrings(child, words, depth + 1);
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+    }
+
+    private static List<WordEntry> ReadTextNodesFromAddon(AtkUnitBasePtr addon, int maxNodes, bool includeInvisible)
     {
         var words = new List<WordEntry>();
         if (addon.IsNull)
@@ -250,11 +320,11 @@ internal static unsafe class KtgInput
             return words;
 
         var visited = 0;
-        WalkChildren(unit->RootNode, words, ref visited, maxNodes);
-        return Deduplicate(words);
+        WalkChildren(unit->RootNode, words, ref visited, maxNodes, includeInvisible);
+        return words;
     }
 
-    private static void WalkChildren(AtkResNode* parent, List<WordEntry> words, ref int visited, int maxNodes)
+    private static void WalkChildren(AtkResNode* parent, List<WordEntry> words, ref int visited, int maxNodes, bool includeInvisible)
     {
         if (parent == null)
             return;
@@ -263,21 +333,22 @@ internal static unsafe class KtgInput
         {
             if (visited++ >= maxNodes)
                 return;
-            Visit(node, words, ref visited, maxNodes);
+            Visit(node, words, ref visited, maxNodes, includeInvisible);
         }
     }
 
-    private static void Visit(AtkResNode* node, List<WordEntry> words, ref int visited, int maxNodes)
+    private static void Visit(AtkResNode* node, List<WordEntry> words, ref int visited, int maxNodes, bool includeInvisible)
     {
         if (node == null || visited > maxNodes)
             return;
 
         try
         {
-            if (node->IsVisible() && node->Type == NodeType.Text)
+            var visibleOk = includeInvisible || node->IsVisible();
+            if (visibleOk && node->Type == NodeType.Text)
             {
                 var text = ((AtkTextNode*)node)->NodeText.ToString();
-                if (IsTargetWord(text))
+                if (IsMinigameWord(text))
                     words.Add(new WordEntry(0, text.Trim()));
             }
 
@@ -287,22 +358,24 @@ internal static unsafe class KtgInput
                 if (comp->Component != null)
                 {
                     var uld = comp->Component->UldManager;
-                    var count = Math.Min((int)uld.NodeListCount, 96);
+                    var count = Math.Min((int)uld.NodeListCount, 128);
                     for (var i = 0; i < count; i++)
                     {
                         if (visited++ >= maxNodes)
                             return;
                         var n = uld.NodeList[i];
-                        if (n == null || !n->IsVisible() || n->Type != NodeType.Text)
+                        if (n == null || n->Type != NodeType.Text)
+                            continue;
+                        if (!includeInvisible && !n->IsVisible())
                             continue;
                         var text = ((AtkTextNode*)n)->NodeText.ToString();
-                        if (IsTargetWord(text))
+                        if (IsMinigameWord(text))
                             words.Add(new WordEntry(0, text.Trim()));
                     }
                 }
             }
 
-            WalkChildren(node, words, ref visited, maxNodes);
+            WalkChildren(node, words, ref visited, maxNodes, includeInvisible);
         }
         catch (Exception ex)
         {
@@ -396,78 +469,45 @@ internal static unsafe class KtgInput
                 sb.AppendLine($"  \"{w.Text}\"");
         }
 
+        DumpNamedAddon(sb, WordAddonName);
+        DumpNamedAddon(sb, AddonName);
         DumpAgent(sb, AgentKtgHud, "KTGHud");
         DumpAgent(sb, AgentKtgResult, "KTGResult");
 
-        if (!inputAddon.IsNull)
-        {
-            sb.AppendLine($"KTGInput values={inputAddon.AtkValuesCount} visible={inputAddon.IsVisible}");
-            var i = 0;
-            foreach (var value in inputAddon.AtkValues)
-            {
-                sb.Append($"  Atk[{i}] {value.ValueType} ");
-                try
-                {
-                    var raw = value.GetValue();
-                    sb.Append(raw switch
-                    {
-                        string s => $"\"{s}\"",
-                        null => "(null)",
-                        _ => raw?.ToString(),
-                    });
-                }
-                catch { sb.Append("(err)"); }
-                sb.AppendLine();
-                i++;
-            }
-        }
-        else
-        {
-            sb.AppendLine("KTGInput not open.");
-        }
-
-        sb.AppendLine("-- Loaded addons containing KTG / Word / Type --");
+        sb.AppendLine("-- Loaded KTG addons (raw Atk + text, no filter) --");
         foreach (var name in ListLoadedAddonNames())
         {
-            if (name.Contains("KTG", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("Word", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("Type", StringComparison.OrdinalIgnoreCase)
-                || name.Contains("Keybound", StringComparison.OrdinalIgnoreCase))
-            {
-                var a = Plugin.GameGui.GetAddonByName(name);
-                sb.AppendLine($"  {name} visible={a.IsVisible} ready={a.IsReady} values={a.AtkValuesCount}");
-                if (!a.IsNull && a.IsVisible)
-                {
-                    foreach (var w in ReadTextNodesFromAddon(a, 80))
-                        sb.AppendLine($"    text \"{w.Text}\"");
-                }
-            }
+            if (!name.Contains("KTG", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var a = Plugin.GameGui.GetAddonByName(name);
+            sb.AppendLine($"  {name} visible={a.IsVisible} ready={a.IsReady} values={a.AtkValuesCount}");
+            if (a.IsNull || !a.IsVisible)
+                continue;
+            DumpAddonAtkValues(sb, a, "    ");
+            foreach (var raw in ReadAllTextNodesRaw(a, 60))
+                sb.AppendLine($"    text \"{raw}\"");
         }
 
-        sb.AppendLine("-- NamePlate target-like strings --");
-        foreach (var w in ReadWordsFromStringArray(StringArrayType.NamePlate, "NamePlate-dump"))
-            sb.AppendLine($"  \"{w.Text}\"");
-
-        sb.AppendLine("-- Stage arrays: target-like words only (skip Hud noise) --");
+        sb.AppendLine("-- Raw string arrays (compact, word-like only) --");
         try
         {
-            var stage = AtkStage.Instance();
-            if (stage != null)
+            var module = RaptureAtkModule.Instance();
+            if (module != null)
             {
+                var holder = module->AtkArrayDataHolder;
+                var count = Math.Min((int)holder.StringArrayCount, 256);
                 var hits = 0;
-                foreach (StringArrayType type in Enum.GetValues<StringArrayType>())
+                for (var i = 0; i < count && hits < 60; i++)
                 {
-                    if (type is StringArrayType.Hud or StringArrayType.Hud2 or StringArrayType.DTR or StringArrayType.NaviMap)
-                        continue;
-                    var sad = stage->GetStringArrayData(type);
+                    var sad = module->GetStringArrayData(i);
                     if (sad == null || sad->Size <= 0 || sad->Size > 256 || sad->StringArray == null)
                         continue;
-                    for (var s = 0; s < sad->Size && hits < 40; s++)
+                    for (var s = 0; s < sad->Size && hits < 60; s++)
                     {
                         var text = ReadCString(sad->StringArray[s]);
-                        if (!IsTargetWord(text))
+                        if (!IsMinigameWord(text) && !LooksInteresting(text))
                             continue;
-                        sb.AppendLine($"  {type}[{s}]=\"{text}\"");
+                        sb.AppendLine($"  str[{i}][{s}]=\"{text}\"");
                         hits++;
                     }
                 }
@@ -475,10 +515,44 @@ internal static unsafe class KtgInput
         }
         catch (Exception ex)
         {
-            sb.AppendLine($"  (stage scan skipped: {ex.Message})");
+            sb.AppendLine($"  (raw scan skipped: {ex.Message})");
         }
 
         return sb.ToString();
+    }
+
+    private static void DumpNamedAddon(StringBuilder sb, string name)
+    {
+        var a = Plugin.GameGui.GetAddonByName(name);
+        sb.AppendLine($"-- {name} null={a.IsNull} visible={(!a.IsNull && a.IsVisible)} ready={(!a.IsNull && a.IsReady)} values={(!a.IsNull ? a.AtkValuesCount : 0)} --");
+        if (a.IsNull)
+            return;
+        DumpAddonAtkValues(sb, a, "  ");
+        foreach (var w in CollectFromAddon(a, includeInvisible: true))
+            sb.AppendLine($"  word \"{w.Text}\"");
+        foreach (var raw in ReadAllTextNodesRaw(a, 80))
+            sb.AppendLine($"  rawtext \"{raw}\"");
+    }
+
+    private static void DumpAddonAtkValues(StringBuilder sb, AtkUnitBasePtr addon, string indent)
+    {
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || unit->AtkValues == null)
+            return;
+        var count = Math.Min((int)unit->AtkValuesCount, 32);
+        for (var i = 0; i < count; i++)
+        {
+            var v = &unit->AtkValues[i];
+            sb.Append($"{indent}Atk[{i}] {v->Type} ");
+            try
+            {
+                sb.AppendLine(Quote(v->GetValueAsString()));
+            }
+            catch
+            {
+                sb.AppendLine("(err)");
+            }
+        }
     }
 
     private static void DumpAgent(StringBuilder sb, int agentId, string label)
@@ -489,7 +563,6 @@ internal static unsafe class KtgInput
             sb.AppendLine($"-- Agent {label} ({agentId}) null={agent.IsNull} active={(!agent.IsNull && agent.IsAgentActive)} addonId={(!agent.IsNull ? agent.AddonId : 0)} --");
             if (agent.IsNull)
                 return;
-
             var addon = agent.Addon;
             if (addon.IsNull)
             {
@@ -498,15 +571,73 @@ internal static unsafe class KtgInput
             }
 
             sb.AppendLine($"  addon name=\"{addon.Name}\" visible={addon.IsVisible} ready={addon.IsReady} values={addon.AtkValuesCount}");
-            foreach (var w in ReadTextNodesFromAddon(addon, 120))
-                sb.AppendLine($"  text \"{w.Text}\"");
-            foreach (var w in ReadAtkValueStrings(addon))
-                sb.AppendLine($"  atk \"{w.Text}\"");
+            DumpAddonAtkValues(sb, addon, "  ");
         }
         catch (Exception ex)
         {
             sb.AppendLine($"  agent dump failed: {ex.Message}");
         }
+    }
+
+    private static List<string> ReadAllTextNodesRaw(AtkUnitBasePtr addon, int maxNodes)
+    {
+        var result = new List<string>();
+        if (addon.IsNull)
+            return result;
+        var unit = (AtkUnitBase*)addon.Address;
+        if (unit == null || unit->RootNode == null)
+            return result;
+
+        var visited = 0;
+        void Walk(AtkResNode* parent)
+        {
+            if (parent == null)
+                return;
+            for (var node = parent->ChildNode; node != null; node = node->PrevSiblingNode)
+            {
+                if (visited++ >= maxNodes)
+                    return;
+                try
+                {
+                    if (node->Type == NodeType.Text)
+                    {
+                        var text = ((AtkTextNode*)node)->NodeText.ToString();
+                        if (!string.IsNullOrWhiteSpace(text))
+                            result.Add(text.Trim());
+                    }
+
+                    if ((int)node->Type >= 1000)
+                    {
+                        var comp = (AtkComponentNode*)node;
+                        if (comp->Component != null)
+                        {
+                            var uld = comp->Component->UldManager;
+                            var count = Math.Min((int)uld.NodeListCount, 96);
+                            for (var i = 0; i < count; i++)
+                            {
+                                if (visited++ >= maxNodes)
+                                    return;
+                                var n = uld.NodeList[i];
+                                if (n == null || n->Type != NodeType.Text)
+                                    continue;
+                                var text = ((AtkTextNode*)n)->NodeText.ToString();
+                                if (!string.IsNullOrWhiteSpace(text))
+                                    result.Add(text.Trim());
+                            }
+                        }
+                    }
+
+                    Walk(node);
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+        }
+
+        Walk(unit->RootNode);
+        return result.Distinct(StringComparer.Ordinal).Take(40).ToList();
     }
 
     private static List<string> ListLoadedAddonNames()
@@ -537,20 +668,34 @@ internal static unsafe class KtgInput
         return names;
     }
 
-    /// <summary>Words shown above enemies: short letter texts, not HUD chrome / player names with spaces+title.</summary>
-    private static bool IsTargetWord(string? text)
+    /// <summary>True for typeable Keybound Brawler phrases; rejects player/pet/HUD noise.</summary>
+    private static bool IsMinigameWord(string? text)
+    {
+        if (!LooksInteresting(text))
+            return false;
+        text = text!.Trim();
+
+        if (NoiseWords.Contains(text))
+            return false;
+        if (IsKnownObjectName(text))
+            return false;
+
+        // Abbreviated nameplates like "Thalia L." / "Sosha S."
+        if (IsAbbreviatedPlayerName(text))
+            return false;
+
+        return true;
+    }
+
+    private static bool LooksInteresting(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
             return false;
         text = text.Trim();
-        if (NoiseWords.Contains(text))
-            return false;
         if (text.Length is < 2 or > 48)
             return false;
         if (text.All(char.IsDigit))
             return false;
-
-        // Strip common SeString junk leftovers.
         if (text.Contains('\u0002') || text.Contains('\u0003'))
             return false;
 
@@ -563,20 +708,60 @@ internal static unsafe class KtgInput
                 return false;
         }
 
-        if (letter < 2)
-            return false;
-
-        // Player-like "First Last" with two capitals is usually not a target word,
-        // but allow single-token words and short phrases used by the minigame.
-        return true;
+        return letter >= 2;
     }
 
-    private static List<WordEntry> Deduplicate(List<WordEntry> words)
+    private static bool IsAbbreviatedPlayerName(string text)
+    {
+        // "First L." pattern used on crowded nameplates.
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2)
+            return false;
+        return parts[1].Length == 2 && parts[1][1] == '.' && char.IsLetter(parts[1][0]);
+    }
+
+    private static bool IsKnownObjectName(string text)
+    {
+        try
+        {
+            foreach (var obj in Plugin.ObjectTable)
+            {
+                if (obj == null || string.IsNullOrEmpty(obj.Name.TextValue))
+                    continue;
+                var name = obj.Name.TextValue;
+                if (name.Equals(text, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                // Match abbreviated form of a known player.
+                if (obj is IPlayerCharacter && IsAbbreviatedFormOf(name, text))
+                    return true;
+            }
+        }
+        catch
+        {
+            // ObjectTable can throw during zone transitions.
+        }
+
+        return false;
+    }
+
+    private static bool IsAbbreviatedFormOf(string fullName, string maybeAbbrev)
+    {
+        var parts = fullName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+            return false;
+        var abbrev = $"{parts[0]} {char.ToUpperInvariant(parts[^1][0])}.";
+        return abbrev.Equals(maybeAbbrev, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static List<WordEntry> FilterAndDedup(List<WordEntry> words)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new List<WordEntry>();
         foreach (var w in words)
         {
+            if (!IsMinigameWord(w.Text))
+                continue;
             if (seen.Add(w.Text))
                 result.Add(w);
         }
@@ -620,4 +805,6 @@ internal static unsafe class KtgInput
             string s => s.Equals("true", StringComparison.OrdinalIgnoreCase),
             _ => false,
         };
+
+    private static string Quote(string? s) => s == null ? "(null)" : $"\"{s}\"";
 }
