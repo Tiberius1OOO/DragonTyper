@@ -1,14 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.0.0.0</Version>
+    <Version>1.0.1.0</Version>
     <Author>Tiberius1OOO</Author>
     <Name>DragonTyper</Name>
     <Punchline>Automatic word typing for Keybound Brawler with configurable delay.</Punchline>
-    <Description>While Active is on, DragonTyper watches the Keybound Brawler input window and submits words for you. Configure base delay, optional longer wait for long sentences, and enable/disable at any time. Outside the minigame it stays passive.</Description>
+    <Description>While Active is on, DragonTyper watches the Keybound Brawler input window and submits words for you. Configure base delay, optional longer wait for long sentences, and enable or disable at any time. Outside the minigame it stays passive.</Description>
     <PackageProjectUrl>https://github.com/Tiberius1OOO/DragonTyper</PackageProjectUrl>
     <RepoUrl>https://github.com/Tiberius1OOO/DragonTyper</RepoUrl>
+    <IconUrl>https://raw.githubusercontent.com/Tiberius1OOO/DragonTyper/main/images/icon.png</IconUrl>
     <Tags>keybound;brawler;typer;automation</Tags>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="images\icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>true</Visible>
+    </Content>
+    <Content Include="images\logo.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Visible>true</Visible>
+    </Content>
+  </ItemGroup>
 </Project>

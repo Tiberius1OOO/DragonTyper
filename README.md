@@ -1,45 +1,48 @@
 # DragonTyper
 
-Dalamud plugin that automatically types words in **Keybound Brawler**.
+<p align="center">
+  <img src="images/icon.png" width="160" alt="DragonTyper logo" />
+</p>
 
-You register and enter the duty yourself. While **Active** is on, DragonTyper watches the in-game input window and submits words with a configurable delay (±20% random jitter). Outside the minigame it does nothing.
+Dalamud plugin for **Keybound Brawler**. You queue and enter the duty yourself. Once **Active** is on, DragonTyper watches the in-game word input and submits words for you with a configurable delay (±20% random jitter). Outside the minigame it stays passive.
 
-## Features
+## What it does
 
-- **Active** toggle — must be enabled before any typing
-- Word delay slider (ms) with ±20% random jitter
+- **Active** toggle: typing only runs when you turn it on
+- Word delay in milliseconds, each wait randomized by ±20%
 - Optional longer wait for long sentences
-- Skips typing during Letterlock and briefly around Letterlock casts
-- Prefers casting enemies, then the nearest (larger) target
-- Passive when logged out or when the Keybound Brawler input is closed
+- Holds during Letterlock and briefly around Letterlock casts
+- Prefers casting enemies, then the nearest larger target
+- Does nothing when logged out or when the Keybound Brawler input is closed
 
-## Install (dev plugin)
+## Commands
 
-1. Build the project (see below) or download a release zip.
-2. In Dalamud: `/xlsettings` → Experimental → Dev Plugin Locations → add the folder that contains `DragonTyper.json` and `DragonTyper.dll`.
-3. Enable **DragonTyper** in `/xlplugins`.
+| Command | Action |
+| --- | --- |
+| `/dragontyper` | Open the window |
+| `/dragontyper on` | Enable Active |
+| `/dragontyper off` | Disable Active |
+| `/dragontyper toggle` | Toggle Active |
+| `/dragontyper dump` | Log raw `KTGInput` values to `/xllog` |
 
-## Usage
+## Install via custom plugin repository
 
-- `/dragontyper` — open the config window
-- `/dragontyper on` / `off` / `toggle` — set Active
-- `/dragontyper dump` — log raw `KTGInput` values (for troubleshooting)
+This plugin is **not** on the official Dalamud plugin list. Add it as a custom repository.
 
-Turn **Active** on, queue into Keybound Brawler manually, and let the plugin type.
+1. Open Dalamud settings with `/xlsettings`
+2. Go to the **Experimental** tab
+3. Under **Custom Plugin Repositories**, add this URL:
 
-## Build
-
-Requirements:
-
-- [.NET 9+ SDK](https://dotnet.microsoft.com/download)
-- XIVLauncher + Dalamud (game launched at least once)
-
-```bash
-dotnet build DragonTyper/DragonTyper.csproj -c Release
+```text
+https://raw.githubusercontent.com/Tiberius1OOO/DragonTyper/main/repo.json
 ```
 
-Output is under `DragonTyper/bin/Release/`.
+4. Click the **+** button, then the save / disk icon
+5. Open `/xlplugins`, enable **Show all plugins** / custom plugins if needed
+6. Find **DragonTyper**, install it, then enable it
+
+After install, open `/dragontyper`, turn **Active** on, and enter Keybound Brawler manually.
 
 ## Disclaimer
 
-Third-party tools can violate FINAL FANTASY XIV’s terms of service. Use at your own risk. This project is for personal use and is not affiliated with Square Enix.
+Third-party tools can violate FINAL FANTASY XIV terms of service. Use at your own risk. Not affiliated with Square Enix.

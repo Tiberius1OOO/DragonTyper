@@ -77,7 +77,7 @@ public sealed class TyperEngine(Plugin plugin)
         if (!KtgInput.TryGetInputEnabled(addon, out var enabled) || !enabled)
         {
             waitFrom = null;
-            status = "Letterlock — holding";
+            status = "Letterlock: holding";
             return;
         }
 
@@ -97,7 +97,7 @@ public sealed class TyperEngine(Plugin plugin)
         var waitStarted = waitFrom ?? now;
         if (now < waitStarted + delay)
         {
-            status = $"Waiting {waitStarted + delay - now}ms — {text}";
+            status = $"Waiting {waitStarted + delay - now}ms: {text}";
             return;
         }
 

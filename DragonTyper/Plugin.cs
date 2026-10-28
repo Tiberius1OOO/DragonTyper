@@ -19,6 +19,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+    [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
 
     public Configuration Configuration { get; }
     public TyperEngine Typer { get; }
@@ -43,7 +44,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfig;
         PluginInterface.UiBuilder.OpenMainUi += ToggleConfig;
 
-        Log.Information("DragonTyper loaded. Use /dragontyper — Active starts off.");
+        Log.Information("DragonTyper loaded. Use /dragontyper. Active starts off.");
     }
 
     public void Dispose()
@@ -100,7 +101,7 @@ public sealed class Plugin : IDalamudPlugin
         Configuration.Save();
         Typer.ResetIdle();
         ChatGui.Print(active
-            ? "[DragonTyper] Active — will type when the Keybound Brawler input is open."
-            : "[DragonTyper] Inactive — passive.");
+            ? "[DragonTyper] Active. Will type when the Keybound Brawler input is open."
+            : "[DragonTyper] Inactive. Passive.");
     }
 }
