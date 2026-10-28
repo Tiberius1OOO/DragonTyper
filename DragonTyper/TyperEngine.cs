@@ -258,6 +258,7 @@ public sealed class TyperEngine(Plugin plugin)
         var bestDistance = float.MaxValue;
         var bestHp = 0u;
         string? fallback = null;
+        var fallbackScore = int.MinValue;
 
         var player = Plugin.ObjectTable.LocalPlayer;
         var me = player?.Position ?? Vector3.Zero;
@@ -269,9 +270,19 @@ public sealed class TyperEngine(Plugin plugin)
             if (recent.TryGetValue(word.Text, out var until) && now < until)
                 continue;
 
-            fallback ??= word.Text;
+            // Fallback score: sheet words and longer phrases beat hotbar leftovers.
+            var score = 0;
+            if (Plugin.Words.IsSheetWord(word.Text))
+                score += 100;
+            if (word.EntityId != 0)
+                score += 50;
+            score += Math.Min(word.Text.Length, 40);
+            if (fallback is null || score > fallbackScore)
+            {
+                fallback = word.Text;
+                fallbackScore = score;
+            }
 
-            // Words without entity id: still valid (array/text-node path).
             if (word.EntityId == 0)
                 continue;
 

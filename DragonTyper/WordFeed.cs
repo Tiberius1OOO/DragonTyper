@@ -14,14 +14,17 @@ using AtkValueType = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType;
 namespace DragonTyper;
 
 /// <summary>
-/// Live word feed. Prefers visible KTGEWord text. Sheet/NumberArray resolve
-/// only fills in for balloons that have an entity but no readable text
-/// (boss / interrupt). Never scans hotbar/HUD string arrays.
+/// Live word feed.
+/// 1) Visible KTGEWord text nodes (normal balloons).
+/// 2) If a balloon has entity but no text (boss/interrupt): pull only
+///    KTGTypeWordTextData sheet members from compact string arrays / number pairs.
+/// Never accepts hotbar chrome (Ability/Range/…) — those are not in the sheet.
 /// </summary>
 internal sealed unsafe class WordFeed : IDisposable
 {
     private readonly object gate = new();
     private readonly Dictionary<uint, string> sheetWords = new();
+    private readonly HashSet<string> sheetWordSet = new(StringComparer.OrdinalIgnoreCase);
     private List<KtgInput.WordEntry> live = [];
     private long liveAt;
     private bool sheetLoaded;
@@ -71,6 +74,12 @@ internal sealed unsafe class WordFeed : IDisposable
         }
     }
 
+    public bool IsSheetWord(string? text)
+    {
+        LoadSheet();
+        return !string.IsNullOrWhiteSpace(text) && sheetWordSet.Contains(text.Trim());
+    }
+
     private void LoadSheet()
     {
         if (sheetLoaded)
@@ -96,6 +105,7 @@ internal sealed unsafe class WordFeed : IDisposable
                 if (text.Length is < 2 or > 48)
                     continue;
                 sheetWords[row.RowId] = text;
+                sheetWordSet.Add(text);
             }
 
             Plugin.Log.Information("Loaded {Count} Keybound word texts from sheet", sheetWords.Count);
@@ -118,22 +128,47 @@ internal sealed unsafe class WordFeed : IDisposable
             var balloons = ReadBalloons();
             var found = new List<KtgInput.WordEntry>();
 
-            // Visible text on balloons always wins.
             foreach (var b in balloons.Where(b => b.Texts.Count > 0))
             {
                 foreach (var text in b.Texts)
+                {
+                    // Balloon text is authoritative even if not in sheet (safety).
                     found.Add(new KtgInput.WordEntry(b.EntityId, text));
+                }
             }
 
-            // Boss/interrupt: balloon visible, entity known, but no Text node — sheet resolve.
-            var needsSheet = balloons
+            var emptyEntities = balloons
                 .Where(b => b.Texts.Count == 0 && b.EntityId != 0 && IsEnemyEntity(b.EntityId))
                 .Select(b => b.EntityId)
                 .ToHashSet();
 
-            if (needsSheet.Count > 0 && sheetWords.Count > 0)
-                CollectSheetWordsForEntities(found, needsSheet);
+            // Boss/interrupt path: no Text on balloon, but phrase is in sheet-backed arrays.
+            if (emptyEntities.Count > 0)
+            {
+                var sheetHits = new List<KtgInput.WordEntry>();
+                CollectSheetWordsFromStringArrays(sheetHits);
+                CollectSheetWordsForEntities(sheetHits, emptyEntities);
 
+                // Attach empty balloon entity when only one empty balloon (typical boss).
+                var entity = emptyEntities.Count == 1 ? emptyEntities.First() : 0UL;
+                foreach (var hit in sheetHits)
+                {
+                    var id = hit.EntityId != 0 ? hit.EntityId : entity;
+                    found.Add(new KtgInput.WordEntry(id, hit.Text));
+                }
+            }
+
+            found = Dedup(found);
+            if (found.Count == 0)
+                return;
+
+            // Prefer real balloon text / sheet words; drop anything not on sheet unless it came from a balloon node.
+            var balloonTexts = new HashSet<string>(
+                balloons.SelectMany(b => b.Texts),
+                StringComparer.OrdinalIgnoreCase);
+            found = found
+                .Where(w => balloonTexts.Contains(w.Text) || sheetWordSet.Contains(w.Text))
+                .ToList();
             found = Dedup(found);
             if (found.Count == 0)
                 return;
@@ -142,7 +177,8 @@ internal sealed unsafe class WordFeed : IDisposable
             {
                 live = found;
                 liveAt = Environment.TickCount64;
-                lastNote = $"feed={found.Count} balloons={balloons.Count} sheetFill={needsSheet.Count} via {args.AddonName}";
+                lastNote =
+                    $"feed={found.Count} balloons={balloons.Count} empty={emptyEntities.Count} via {args.AddonName}";
             }
         }
         catch (Exception ex)
@@ -199,6 +235,54 @@ internal sealed unsafe class WordFeed : IDisposable
         }
 
         return list;
+    }
+
+    private void CollectSheetWordsFromStringArrays(List<KtgInput.WordEntry> into)
+    {
+        var module = RaptureAtkModule.Instance();
+        if (module == null)
+            return;
+
+        var holder = module->AtkArrayDataHolder;
+        var count = Math.Min((int)holder.StringArrayCount, 200);
+        for (var i = 0; i < count; i++)
+        {
+            StringArrayData* sad;
+            try
+            {
+                sad = module->GetStringArrayData(i);
+            }
+            catch
+            {
+                continue;
+            }
+
+            // Hotbar/tooltip arrays are large; live KTG word lists seen in captures are compact.
+            if (sad == null || sad->StringArray == null || sad->Size is <= 0 or > 48)
+                continue;
+
+            for (var s = 0; s < sad->Size; s++)
+            {
+                try
+                {
+                    var ptr = sad->StringArray[s];
+                    if (!ptr.HasValue)
+                        continue;
+                    var text = ptr.ToString()?.Trim();
+                    if (string.IsNullOrEmpty(text))
+                        continue;
+                    if (!sheetWordSet.Contains(text))
+                        continue;
+                    if (!KtgInput.IsMinigameWordPublic(text))
+                        continue;
+                    into.Add(new KtgInput.WordEntry(0, text));
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+        }
     }
 
     private void CollectSheetWordsForEntities(List<KtgInput.WordEntry> into, HashSet<ulong> entities)
@@ -281,7 +365,6 @@ internal sealed unsafe class WordFeed : IDisposable
             // zone transition
         }
 
-        // Entity id looks like battle NPC even if object table miss.
         return entityId is >= 0x40000000 and <= 0x4FFFFFFF;
     }
 
