@@ -43,6 +43,11 @@ internal static unsafe class KtgInput
         "Defeat the airbuster", "The reinforcements fade...", "Miss", "Reflect", "Reflected",
         "Interrupted!", "Interrupted", "Resist", "Charge", "BONUS", "HP",
         "Enter", "Delete Text/Quit",
+        // Hotbar / action tooltip chrome that leaked via WordFeed 1.0.9
+        "Ability", "Range", "Radius", "Recast", "Cast", "Instant",
+        "BRD", "PLD", "WAR", "DRK", "GNB", "WHM", "SCH", "AST", "SGE",
+        "MNK", "DRG", "NIN", "SAM", "RPR", "VPR", "MCH", "DNC", "BLM", "SMN", "RDM", "PCT",
+        "Ninjutsu", "gil", "Tankbuster",
     };
 
     public static IReadOnlyList<WordEntry> CachedWords
