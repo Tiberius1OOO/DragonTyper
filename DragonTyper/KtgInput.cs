@@ -11,6 +11,7 @@ using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using CsAtkValueType = FFXIVClientStructs.FFXIV.Component.GUI.AtkValueType;
 using CStringPointer = InteropGenerator.Runtime.CStringPointer;
+using Utf8String = FFXIVClientStructs.FFXIV.Client.System.String.Utf8String;
 
 namespace DragonTyper;
 
@@ -40,6 +41,8 @@ internal static unsafe class KtgInput
         "TYPING FEVER!", "TYPING FEVER", "Duty Information", "In Duty", "Viewing Cutscene",
         "The Gold Saucer", "Immortal Flames", "Order of the Twin Adder", "Maelstrom",
         "Defeat the airbuster", "The reinforcements fade...", "Miss", "Reflect", "Reflected",
+        "Interrupted!", "Interrupted", "Resist", "Charge", "BONUS", "HP",
+        "Enter", "Delete Text/Quit",
     };
 
     public static IReadOnlyList<WordEntry> CachedWords
@@ -82,38 +85,19 @@ internal static unsafe class KtgInput
 
     public static List<WordEntry> ReadWords(AtkUnitBasePtr inputAddon)
     {
-        // 1) KTGEWord — enemy word balloons ("Bladesman of Legend", etc.).
+        // Only KTGEWord balloons — other KTG* addons leak cast-bar / HUD text.
         var fromWord = ReadWordsFromNamedAddon(WordAddonName, "KTGEWord");
         if (fromWord.Count > 0)
             return fromWord;
 
-        // 2) Any other loaded KTG*Word* / Type addon (not Input / Hud chrome).
-        var fromKtg = ReadWordsFromLoadedKtgWordAddons();
-        if (fromKtg.Count > 0)
-            return fromKtg;
-
-        // 3) Raw string arrays that look like minigame words (never NamePlate).
-        var fromArrays = ReadWordsFromRawStringArrays();
-        if (fromArrays.Count > 0)
-            return fromArrays;
-
-        // 4) KTGInput text nodes / AtkValues (usually empty).
-        if (!inputAddon.IsNull)
-        {
-            var local = CollectFromAddon(inputAddon, includeInvisible: true);
-            if (local.Count > 0)
-            {
-                StoreCache(local, "KTGInput");
-                return local;
-            }
-        }
-
+        // Brief cache so a one-frame flicker does not clear the queue.
         lock (Gate)
         {
-            if (cachedWords.Count > 0 && Environment.TickCount64 - lastCacheAt < 1500)
+            if (cachedWords.Count > 0 && Environment.TickCount64 - lastCacheAt < 800)
                 return cachedWords.ToList();
         }
 
+        _ = inputAddon;
         return [];
     }
 
@@ -383,6 +367,11 @@ internal static unsafe class KtgInput
         }
     }
 
+    /// <summary>
+    /// Minion does control:Action("SubmitWord", text). That maps to the KTGInput
+    /// text field + Enter, or a FireCallback with close/updateState=false.
+    /// Earlier builds always passed close=true and ignored the return value.
+    /// </summary>
     public static bool SubmitWord(AtkUnitBasePtr addon, string word)
     {
         if (addon.IsNull || string.IsNullOrEmpty(word))
@@ -395,56 +384,166 @@ internal static unsafe class KtgInput
         if (unit == null)
             return false;
 
-        if (TryFire(unit, ["SubmitWord", word]))
-            return true;
-        if (TryFire(unit, [word]))
-            return true;
+        // 1) Real input path: set TextInput then fire Enter (UI hint: [Enter] Submit Text).
+        try
+        {
+            if (TrySubmitViaTextInput(unit, word))
+            {
+                Plugin.Log.Information("Submit via TextInput+Enter for '{Word}'", word);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Debug(ex, "TextInput submit failed for '{Word}'", word);
+        }
 
+        // 2) Minion-style named action: FireCallback("SubmitWord", text), close=false.
+        if (TryFire(unit, close: false, "SubmitWord", word))
+        {
+            Plugin.Log.Information("Submit via FireCallback SubmitWord for '{Word}'", word);
+            return true;
+        }
+
+        // 3) Set AtkValues[1] (input buffer; dump showed a fullwidth space there) then callback.
         try
         {
             if (unit->AtkValues != null && unit->AtkValuesCount > 1)
             {
                 unit->AtkValues[1].SetManagedString(word);
-                if (TryFire(unit, [0]))
+                if (TryFire(unit, close: false, "SubmitWord", word)
+                    || TryFire(unit, close: false, 0)
+                    || TryFire(unit, close: false, word))
                 {
-                    Plugin.Log.Information("Submit via AtkValues[1]+callback0 for '{Word}'", word);
+                    Plugin.Log.Information("Submit via AtkValues[1]+callback for '{Word}'", word);
                     return true;
                 }
             }
         }
         catch (Exception ex)
         {
-            Plugin.Log.Error(ex, "Submit fallback failed for '{Word}'", word);
+            Plugin.Log.Error(ex, "Submit AtkValues fallback failed for '{Word}'", word);
         }
 
+        // 4) Last resorts (still close=false).
+        if (TryFire(unit, close: false, word))
+            return true;
+        if (TryFire(unit, close: false, 0, word))
+            return true;
+
+        Plugin.Log.Error("All SubmitWord paths failed for '{Word}'", word);
         return false;
     }
 
-    private static bool TryFire(AtkUnitBase* unit, object[] args)
+    private static bool TrySubmitViaTextInput(AtkUnitBase* unit, string word)
     {
-        var values = stackalloc AtkValue[args.Length];
-        for (var i = 0; i < args.Length; i++)
-            values[i] = default;
+        var textInput = FindTextInput(unit);
+        if (textInput == null)
+            return false;
 
+        textInput->SetText(word);
+
+        var inputBase = (AtkComponentInputBase*)textInput;
+        if (inputBase->Callback == null || inputBase->OwnerAddon == null)
+            return false;
+
+        // Prefer evaluated/raw strings after SetText.
+        var rawPtr = inputBase->RawString.StringPtr;
+        var evalPtr = inputBase->EvaluatedString.StringPtr;
+        if (!rawPtr.HasValue && !evalPtr.HasValue)
+            return false;
+
+        var result = inputBase->Callback(
+            inputBase->OwnerAddon,
+            InputCallbackType.Enter,
+            rawPtr.HasValue ? rawPtr : evalPtr,
+            evalPtr.HasValue ? evalPtr : rawPtr,
+            inputBase->CallbackEventKind);
+
+        Plugin.Log.Debug("TextInput Enter callback result={Result} for '{Word}'", result, word);
+        return result is InputCallbackResult.None or InputCallbackResult.ClearText;
+    }
+
+    private static AtkComponentTextInput* FindTextInput(AtkUnitBase* unit)
+    {
+        if (unit == null)
+            return null;
+
+        try
+        {
+            var uld = unit->UldManager;
+            var count = Math.Min((int)uld.NodeListCount, 256);
+            for (var i = 0; i < count; i++)
+            {
+                var node = uld.NodeList[i];
+                if (node == null || (int)node->Type < 1000)
+                    continue;
+                var comp = ((AtkComponentNode*)node)->Component;
+                if (comp == null)
+                    continue;
+                if (comp->GetComponentType() == ComponentType.TextInput)
+                    return (AtkComponentTextInput*)comp;
+            }
+        }
+        catch (Exception ex)
+        {
+            PluginLogHelpers.WarnOnce("find-textinput", 5000, "FindTextInput failed: {Message}", ex.Message);
+        }
+
+        return null;
+    }
+
+    /// <summary>ECommons-style FireCallback: UTF-8 String values, close/updateState flag, real return.</summary>
+    private static bool TryFire(AtkUnitBase* unit, bool close, params object[] args)
+    {
+        if (unit == null || args.Length == 0)
+            return false;
+
+        var values = (AtkValue*)Marshal.AllocHGlobal(args.Length * sizeof(AtkValue));
+        if (values == null)
+            return false;
+
+        var stringAllocs = new List<IntPtr>();
         try
         {
             for (var i = 0; i < args.Length; i++)
             {
+                values[i] = default;
                 switch (args[i])
                 {
                     case string s:
-                        values[i].SetManagedString(s);
+                    {
+                        // Match ECommons: Type=String with UTF-8 heap buffer (not ManagedString).
+                        var bytes = Encoding.UTF8.GetBytes(s);
+                        var alloc = Marshal.AllocHGlobal(bytes.Length + 1);
+                        Marshal.Copy(bytes, 0, alloc, bytes.Length);
+                        Marshal.WriteByte(alloc, bytes.Length, 0);
+                        stringAllocs.Add(alloc);
+                        values[i].Type = CsAtkValueType.String;
+                        values[i].String = (byte*)alloc;
                         break;
+                    }
                     case int n:
-                        values[i].SetInt(n);
+                        values[i].Type = CsAtkValueType.Int;
+                        values[i].Int = n;
+                        break;
+                    case uint u:
+                        values[i].Type = CsAtkValueType.UInt;
+                        values[i].UInt = u;
+                        break;
+                    case bool b:
+                        values[i].Type = CsAtkValueType.Bool;
+                        values[i].Byte = (byte)(b ? 1 : 0);
                         break;
                     default:
                         return false;
                 }
             }
 
-            unit->FireCallback((uint)args.Length, values, true);
-            return true;
+            var ok = unit->FireCallback((uint)args.Length, values, close);
+            if (!ok)
+                Plugin.Log.Debug("FireCallback returned false (close={Close}, args={Args})", close, args.Length);
+            return ok;
         }
         catch (Exception ex)
         {
@@ -453,8 +552,9 @@ internal static unsafe class KtgInput
         }
         finally
         {
-            for (var i = 0; i < args.Length; i++)
-                values[i].ReleaseManagedMemory();
+            foreach (var alloc in stringAllocs)
+                Marshal.FreeHGlobal(alloc);
+            Marshal.FreeHGlobal((IntPtr)values);
         }
     }
 
