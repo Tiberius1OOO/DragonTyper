@@ -30,9 +30,13 @@ public sealed class Plugin : IDalamudPlugin
     internal LiveCapture Capture { get; }
     internal static WordFeed Words { get; private set; } = null!;
 
+    /// <summary>Keybound Brawler duty TerritoryType (confirmed via live captures).</summary>
+    private const ushort KeyboundTerritory = 1359;
+
     private readonly WindowSystem windowSystem = new("DragonTyper");
     private readonly ConfigWindow configWindow;
     private bool wasLoggedIn;
+    private bool wasInMinigame;
 
     public Plugin()
     {
@@ -94,6 +98,7 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     Log.Information("Logged out. Typer paused.");
                     Typer.ResetIdle();
+                    wasInMinigame = false;
                 }
 
                 wasLoggedIn = false;
@@ -101,6 +106,8 @@ public sealed class Plugin : IDalamudPlugin
             }
 
             wasLoggedIn = true;
+            TryAutoOpenInMinigame();
+
             try
             {
                 Capture.Tick();
@@ -116,6 +123,27 @@ public sealed class Plugin : IDalamudPlugin
         {
             Log.Error(ex, "Framework update failed");
         }
+    }
+
+    /// <summary>
+    /// Menus are locked inside Keybound Brawler — open the UI once on entry
+    /// so Start/Stop stays reachable. Does not reopen if the user closes it mid-run.
+    /// </summary>
+    private void TryAutoOpenInMinigame()
+    {
+        var inMinigame = ClientState.TerritoryType == KeyboundTerritory
+                         || !KtgInput.GetAddon().IsNull;
+
+        if (inMinigame && !wasInMinigame)
+        {
+            if (!configWindow.IsOpen)
+            {
+                configWindow.IsOpen = true;
+                Log.Information("Entered Keybound Brawler — opened DragonTyper UI.");
+            }
+        }
+
+        wasInMinigame = inMinigame;
     }
 
     private void OnCommand(string command, string args)
