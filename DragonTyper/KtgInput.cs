@@ -27,7 +27,17 @@ internal static unsafe class KtgInput
     private const int AgentKtgHud = (int)AgentId.KTGHud;
     private const int AgentKtgResult = (int)AgentId.KTGResult;
 
-    public readonly record struct WordEntry(ulong EntityId, string Text);
+    /// <param name="Kind">HUD type; 2 = barrier/defense phrase.</param>
+    public readonly record struct WordEntry(
+        ulong EntityId,
+        string Text,
+        int Kind = 0,
+        int CastProgress = 0,
+        bool ImportantCast = false,
+        int ScreenY = 0)
+    {
+        public bool IsBarrier => Kind == 2;
+    }
 
     private static readonly object Gate = new();
     private static List<WordEntry> cachedWords = [];
@@ -885,15 +895,21 @@ internal static unsafe class KtgInput
         var letter = 0;
         foreach (var c in text)
         {
-            if (char.IsLetter(c))
+            if (char.IsLetter(c) || IsCjk(c))
                 letter++;
             else if (!(char.IsWhiteSpace(c) || char.IsDigit(c)
-                       || c is '.' or ',' or '\'' or '-' or '!' or '?' or ':' or ';' or '"' or '/'))
+                       || c is '.' or ',' or '\'' or '-' or '!' or '?' or ':' or ';' or '"' or '/'
+                       or '！' or '？' or '、' or '。' or '「' or '」' or '・' or '～' or '〜'))
                 return false;
         }
 
         return letter >= 2;
     }
+
+    private static bool IsCjk(char c) =>
+        c is (>= '\u3040' and <= '\u30FF')
+            or (>= '\u3400' and <= '\u9FFF')
+            or (>= '\uFF66' and <= '\uFF9D');
 
     private static bool IsAbbreviatedPlayerName(string text)
     {

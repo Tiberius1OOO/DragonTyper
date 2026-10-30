@@ -13,21 +13,18 @@ public sealed class TyperEngine(Plugin plugin)
     private const int CheckEveryMs = 100;
     private const float Jitter = 0.20f;
     private const int RecentForMs = 2500;
-    private const int GuardMs = 500;
     private const uint BigHp = 1000;
     private const int LongWordChars = 28;
     private const int LongMaxMs = 5000;
     private const int WarnCooldownMs = 8000;
 
-    private static readonly HashSet<uint> LetterlockCasts = [49529, 49532, 49702];
-
     private readonly Dictionary<string, long> recent = new(StringComparer.OrdinalIgnoreCase);
     private readonly Random random = new();
+    private readonly LetterlockGuard letterlock = new();
 
     private long nextCheckAt;
     private long? waitFrom;
     private float waitRoll;
-    private long? holdUntil;
     private string status = "Idle";
     private bool sawAddon;
     private bool loggedSessionStart;
@@ -41,9 +38,9 @@ public sealed class TyperEngine(Plugin plugin)
     public void ResetIdle()
     {
         waitFrom = null;
-        holdUntil = null;
         nextCheckAt = 0;
         recent.Clear();
+        letterlock.Reset();
         sawAddon = false;
         loggedSessionStart = false;
         emptyParseStreak = 0;
@@ -135,18 +132,10 @@ public sealed class TyperEngine(Plugin plugin)
                 KtgInput.LastSource);
         }
 
-        if (!KtgInput.TryGetInputEnabled(addon, out var enabled))
-        {
-            status = "Running. Input flag unreadable";
-            LastError = "Cannot read KTGInput enabled flag (AtkValue[2])";
-            PluginLogHelpers.WarnOnce("enabled-unreadable", WarnCooldownMs, "Cannot read enabled flag. AtkValuesCount={Count}", addon.AtkValuesCount);
-            return;
-        }
-
-        if (!enabled)
+        if (letterlock.ShouldHold(addon, now, out var lockReason))
         {
             waitFrom = null;
-            status = "Running. Letterlock hold";
+            status = $"Running. {lockReason}";
             return;
         }
 
@@ -188,7 +177,6 @@ public sealed class TyperEngine(Plugin plugin)
         var text = Pick(words, now, out var onCooldown);
         if (text == null)
         {
-            // Pick only returns null when every candidate is in recent[].
             status = onCooldown > 0
                 ? $"Running. {onCooldown} word(s) just typed, waiting"
                 : "Running. No typeable word";
@@ -206,17 +194,11 @@ public sealed class TyperEngine(Plugin plugin)
             return;
         }
 
-        if (holdUntil is long hold && now < hold)
+        // Re-check letterlock right before submit.
+        if (letterlock.ShouldHold(addon, now, out lockReason))
         {
-            status = "Running. Letterlock cast hold";
-            return;
-        }
-
-        var left = LetterlockCastLeftMs();
-        if (left is float remaining && remaining <= GuardMs)
-        {
-            holdUntil = now + (long)Math.Max(0, remaining) + GuardMs;
-            status = "Running. Letterlock cast hold";
+            waitFrom = null;
+            status = $"Running. {lockReason}";
             return;
         }
 
@@ -254,14 +236,13 @@ public sealed class TyperEngine(Plugin plugin)
     }
 
     /// <summary>
-    /// Prefer casting/nearest when Atk[1] happens to resolve to a live enemy.
-    /// KTGEWord Atk[1] is shared across all balloons — never require it.
-    /// Fallback: first on-screen balloon word not in recent[] (literal UI text only).
+    /// Priority: barrier → important/interrupt cast → casting add → nearest → bigger HP.
     /// </summary>
     private string? Pick(List<KtgInput.WordEntry> words, long now, out int onCooldown)
     {
         string? best = null;
-        var bestCasting = false;
+        var bestRank = int.MinValue;
+        var bestCastProgress = -1;
         var bestDistance = float.MaxValue;
         var bestHp = 0u;
         string? fallback = null;
@@ -280,40 +261,61 @@ public sealed class TyperEngine(Plugin plugin)
                 continue;
             }
 
-            // On-screen balloon text is always typeable; entity is optional priority.
             fallback ??= word.Text;
 
-            if (word.EntityId == 0)
-                continue;
+            var rank = 0;
+            if (word.IsBarrier)
+                rank = 3;
+            else if (word.ImportantCast || word.CastProgress > 0)
+                rank = 2;
 
-            var obj = FindObject(word.EntityId);
-            if (obj is not IBattleChara battle)
-                continue;
-            if (!battle.IsTargetable || battle.IsDead || battle.CurrentHp == 0)
-                continue;
+            var distance = float.MaxValue;
+            var hp = 0u;
+            var casting = false;
 
-            var maxHp = battle.MaxHp;
-            var isCasting = maxHp < BigHp && IsCasting(battle);
-            var distance = player == null ? 0f : Distance2D(me, battle.Position);
+            if (word.EntityId != 0)
+            {
+                var obj = FindObject(word.EntityId);
+                if (obj is IBattleChara battle && battle.IsTargetable && !battle.IsDead && battle.CurrentHp > 0)
+                {
+                    hp = battle.MaxHp;
+                    distance = player == null ? 0f : Distance2D(me, battle.Position);
+                    casting = hp < BigHp && IsCasting(battle);
+                    if (rank < 2 && casting)
+                        rank = 1;
+                }
+                else if (word.ScreenY != 0)
+                {
+                    // No object resolve — use screen Y as crude "closer to barrier" hint (higher Y = closer).
+                    distance = -word.ScreenY;
+                }
+            }
+            else if (word.ScreenY != 0)
+            {
+                distance = -word.ScreenY;
+            }
 
             var better = best == null;
             if (best != null)
             {
-                if (isCasting != bestCasting)
-                    better = isCasting;
+                if (rank != bestRank)
+                    better = rank > bestRank;
+                else if (word.CastProgress != bestCastProgress && rank >= 2)
+                    better = word.CastProgress > bestCastProgress;
                 else if (Math.Abs(distance - bestDistance) > 0.01f)
                     better = distance < bestDistance;
                 else
-                    better = maxHp > bestHp;
+                    better = hp > bestHp;
             }
 
             if (!better)
                 continue;
 
             best = word.Text;
-            bestCasting = isCasting;
+            bestRank = rank;
+            bestCastProgress = word.CastProgress;
             bestDistance = distance;
-            bestHp = maxHp;
+            bestHp = hp;
         }
 
         return best ?? fallback;
@@ -334,31 +336,14 @@ public sealed class TyperEngine(Plugin plugin)
     {
         try
         {
-            return battle.IsCasting && battle.CastActionId != 0;
+            return battle.IsCasting && battle.CastActionId != 0
+                   && !LetterlockGuard.IsHaltSpell(null, battle.CastActionId);
         }
         catch (Exception ex)
         {
             PluginLogHelpers.WarnOnce("cast-read", WarnCooldownMs, "IsCasting read failed: {Message}", ex.Message);
             return false;
         }
-    }
-
-    private float? LetterlockCastLeftMs()
-    {
-        float? soonest = null;
-        foreach (var obj in Plugin.ObjectTable)
-        {
-            if (obj is not IBattleChara battle || battle.IsDead)
-                continue;
-            if (!battle.IsCasting || !LetterlockCasts.Contains(battle.CastActionId))
-                continue;
-
-            var left = (battle.TotalCastTime - battle.CurrentCastTime) * 1000f;
-            if (soonest is null || left < soonest)
-                soonest = left;
-        }
-
-        return soonest;
     }
 
     private static float Distance2D(Vector3 a, Vector3 b)

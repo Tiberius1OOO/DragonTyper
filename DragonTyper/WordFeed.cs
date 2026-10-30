@@ -1,25 +1,25 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Dalamud.Game;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Plugin.Services;
-using Lumina.Excel.Sheets;
 
 namespace DragonTyper;
 
 /// <summary>
-/// Live word feed from KTGEWord's 20 fixed slots (name/title text + per-slot entity).
+/// Live word feed: KTGEWord slots + HUD arrays (kind/cast) + locale typed forms.
 /// </summary>
 internal sealed class WordFeed : IDisposable
 {
     private readonly object gate = new();
-    private readonly Dictionary<uint, string> sheetWords = new();
-    private readonly HashSet<string> sheetWordSet = new(StringComparer.OrdinalIgnoreCase);
+    private readonly WordBook book = new();
     private List<KtgInput.WordEntry> live = [];
     private long liveAt;
-    private bool sheetLoaded;
     private string lastNote = "idle";
+
+    public WordBook Book => book;
 
     public string LastNote
     {
@@ -28,10 +28,10 @@ internal sealed class WordFeed : IDisposable
 
     public void Enable(IAddonLifecycle lifecycle)
     {
-        LoadSheet();
+        book.EnsureLoaded();
         lifecycle.RegisterListener(AddonEvent.PreRequestedUpdate, "KTGInput", OnUpdate);
         lifecycle.RegisterListener(AddonEvent.PreRequestedUpdate, "KTGEWord", OnUpdate);
-        Plugin.Log.Information("WordFeed enabled (sheet words={Count})", sheetWords.Count);
+        Plugin.Log.Information("WordFeed enabled");
     }
 
     public void Disable(IAddonLifecycle lifecycle)
@@ -56,54 +56,13 @@ internal sealed class WordFeed : IDisposable
         }
     }
 
-    public IReadOnlyDictionary<uint, string> SheetWords
-    {
-        get
-        {
-            LoadSheet();
-            return sheetWords;
-        }
-    }
-
     public bool IsSheetWord(string? text)
     {
-        LoadSheet();
-        return !string.IsNullOrWhiteSpace(text) && sheetWordSet.Contains(text.Trim());
-    }
-
-    private void LoadSheet()
-    {
-        if (sheetLoaded)
-            return;
-        sheetLoaded = true;
-        try
-        {
-            var sheet = Plugin.DataManager.GetExcelSheet<KTGTypeWordTextData>();
-            if (sheet == null)
-            {
-                Plugin.Log.Warning("KTGTypeWordTextData sheet missing");
-                return;
-            }
-
-            foreach (var row in sheet)
-            {
-                var text = KtgWordSlots.DecodeSeString(row.Unknown0.ToString());
-                if (string.IsNullOrWhiteSpace(text))
-                    text = KtgWordSlots.DecodeSeString(row.Unknown1.ToString());
-                if (string.IsNullOrWhiteSpace(text))
-                    continue;
-                if (text.Length is < 2 or > 80)
-                    continue;
-                sheetWords[row.RowId] = text;
-                sheetWordSet.Add(text);
-            }
-
-            Plugin.Log.Information("Loaded {Count} Keybound word texts from sheet", sheetWords.Count);
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.Error(ex, "Failed loading KTGTypeWordTextData");
-        }
+        book.EnsureLoaded();
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+        var typed = book.ToTypedForm(text);
+        return !string.IsNullOrWhiteSpace(typed);
     }
 
     private void OnUpdate(AddonEvent type, AddonArgs args)
@@ -113,7 +72,54 @@ internal sealed class WordFeed : IDisposable
             if (args is not AddonRequestedUpdateArgs)
                 return;
 
-            var found = KtgWordSlots.ReadAll();
+            book.EnsureLoaded();
+            var slots = KtgWordSlots.ReadAll(book);
+            var byEntity = new Dictionary<ulong, KtgInput.WordEntry>();
+            var byText = new Dictionary<string, KtgInput.WordEntry>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var w in slots)
+                Index(w, byEntity, byText);
+
+            if (KtgHudArrays.TryRead(out var hud))
+            {
+                var japanese = Plugin.ClientState.ClientLanguage == ClientLanguage.Japanese;
+                foreach (var h in hud)
+                {
+                    if (!h.Visible && h.Kind != 2)
+                        continue;
+
+                    var label = japanese
+                        ? (!string.IsNullOrWhiteSpace(h.Reading) ? h.Reading : h.Name)
+                        : (!string.IsNullOrWhiteSpace(h.Name) ? h.Name : h.Reading);
+                    var typed = book.ToTypedForm(label);
+                    if (string.IsNullOrWhiteSpace(typed) || !KtgInput.IsMinigameWordPublic(typed))
+                        continue;
+
+                    if (byEntity.TryGetValue(h.EntityId, out var existing)
+                        || byText.TryGetValue(typed, out existing))
+                    {
+                        var merged = existing with
+                        {
+                            EntityId = existing.EntityId != 0 ? existing.EntityId : h.EntityId,
+                            Kind = h.Kind != 0 ? h.Kind : existing.Kind,
+                            CastProgress = Math.Max(existing.CastProgress, h.CastProgress),
+                            ImportantCast = existing.ImportantCast || h.ImportantCast,
+                            ScreenY = h.ScreenY != 0 ? h.ScreenY : existing.ScreenY,
+                        };
+                        Index(merged, byEntity, byText);
+                    }
+                    else
+                    {
+                        Index(
+                            new KtgInput.WordEntry(
+                                h.EntityId, typed, h.Kind, h.CastProgress, h.ImportantCast, h.ScreenY),
+                            byEntity,
+                            byText);
+                    }
+                }
+            }
+
+            var found = byText.Values.ToList();
             if (found.Count == 0)
                 return;
 
@@ -121,12 +127,22 @@ internal sealed class WordFeed : IDisposable
             {
                 live = found;
                 liveAt = Environment.TickCount64;
-                lastNote = $"feed={found.Count} slots via {args.AddonName}";
+                lastNote = $"feed={found.Count} via {args.AddonName}";
             }
         }
         catch (Exception ex)
         {
             PluginLogHelpers.WarnOnce("wordfeed-update", 5000, "WordFeed update failed: {Message}", ex.Message);
         }
+    }
+
+    private static void Index(
+        KtgInput.WordEntry w,
+        Dictionary<ulong, KtgInput.WordEntry> byEntity,
+        Dictionary<string, KtgInput.WordEntry> byText)
+    {
+        byText[w.Text] = w;
+        if (w.EntityId != 0)
+            byEntity[w.EntityId] = w;
     }
 }

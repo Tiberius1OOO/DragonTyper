@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using Dalamud.Game;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace DragonTyper;
@@ -35,12 +36,13 @@ internal static unsafe class KtgWordSlots
         [FieldOffset(180)] public byte Obstructed;
     }
 
-    public static List<KtgInput.WordEntry> ReadAll()
+    public static List<KtgInput.WordEntry> ReadAll(WordBook? book = null)
     {
         var words = new List<KtgInput.WordEntry>();
         var seenText = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var now = Environment.TickCount64;
         var aliveSlots = new HashSet<int>();
+        book ??= Plugin.Words?.Book;
 
         try
         {
@@ -55,9 +57,9 @@ internal static unsafe class KtgWordSlots
             if (unit == null)
                 return words;
 
-            var fromTable = TryReadFromSlotTable(unit, now, aliveSlots, seenText, words);
+            var fromTable = TryReadFromSlotTable(unit, now, aliveSlots, seenText, words, book);
             if (!fromTable)
-                ReadFromNodeList(unit, now, aliveSlots, seenText, words);
+                ReadFromNodeList(unit, now, aliveSlots, seenText, words, book);
 
             lock (Gate)
             {
@@ -81,7 +83,8 @@ internal static unsafe class KtgWordSlots
         long now,
         HashSet<int> aliveSlots,
         HashSet<string> seenText,
-        List<KtgInput.WordEntry> words)
+        List<KtgInput.WordEntry> words,
+        WordBook? book)
     {
         try
         {
@@ -112,7 +115,7 @@ internal static unsafe class KtgWordSlots
                 var noise = comp->Component != null && HasNoiseOverlay(&comp->Component->UldManager);
 
                 AddSlotCandidate(
-                    slot, entity, name, title, nameVisible, titleVisible, obstructed || noise, now, seenText, words);
+                    slot, entity, name, title, nameVisible, titleVisible, obstructed || noise, now, seenText, words, book);
             }
 
             return anyComponent;
@@ -128,7 +131,8 @@ internal static unsafe class KtgWordSlots
         long now,
         HashSet<int> aliveSlots,
         HashSet<string> seenText,
-        List<KtgInput.WordEntry> words)
+        List<KtgInput.WordEntry> words,
+        WordBook? book)
     {
         var mgr = &unit->UldManager;
         if (mgr->NodeList == null)
@@ -171,7 +175,7 @@ internal static unsafe class KtgWordSlots
                 // ignore
             }
 
-            AddSlotCandidate(slot, entity, name, title, nameVisible, titleVisible, noise, now, seenText, words);
+            AddSlotCandidate(slot, entity, name, title, nameVisible, titleVisible, noise, now, seenText, words, book);
         }
     }
 
@@ -185,9 +189,10 @@ internal static unsafe class KtgWordSlots
         bool obscured,
         long now,
         HashSet<string> seenText,
-        List<KtgInput.WordEntry> words)
+        List<KtgInput.WordEntry> words,
+        WordBook? book)
     {
-        var live = PickTypeable(name, title, nameVisible, titleVisible);
+        var live = PickTypeable(name, title, nameVisible, titleVisible, book);
         if (live != null)
         {
             lock (Gate)
@@ -215,17 +220,42 @@ internal static unsafe class KtgWordSlots
         TryAdd(words, seenText, id, mem.Text);
     }
 
-    private static string? PickTypeable(string name, string title, bool nameVisible, bool titleVisible)
+    private static string? PickTypeable(
+        string name, string title, bool nameVisible, bool titleVisible, WordBook? book)
     {
-        if (nameVisible && KtgInput.IsMinigameWordPublic(name))
-            return name.Trim();
-        if (titleVisible && KtgInput.IsMinigameWordPublic(title))
-            return title.Trim();
-        if (!string.IsNullOrWhiteSpace(name) && KtgInput.IsMinigameWordPublic(name))
-            return name.Trim();
-        if (!string.IsNullOrWhiteSpace(title) && KtgInput.IsMinigameWordPublic(title))
-            return title.Trim();
-        return null;
+        var japanese = Plugin.ClientState.ClientLanguage == ClientLanguage.Japanese;
+
+        string? Prefer(string primary, string secondary, bool primaryVis, bool secondaryVis)
+        {
+            if (primaryVis)
+            {
+                var t = ToTyped(primary, book);
+                if (t != null) return t;
+            }
+
+            if (secondaryVis)
+            {
+                var t = ToTyped(secondary, book);
+                if (t != null) return t;
+            }
+
+            var a = ToTyped(primary, book);
+            if (a != null) return a;
+            return ToTyped(secondary, book);
+        }
+
+        // JP: title/reading (node 22) is what you type; EN/DE/FR: name (node 20).
+        return japanese
+            ? Prefer(title, name, titleVisible, nameVisible)
+            : Prefer(name, title, nameVisible, titleVisible);
+    }
+
+    private static string? ToTyped(string raw, WordBook? book)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+        var typed = book?.ToTypedForm(raw) ?? raw.Trim();
+        return KtgInput.IsMinigameWordPublic(typed) ? typed.Trim() : null;
     }
 
     private static void TryAdd(List<KtgInput.WordEntry> words, HashSet<string> seen, ulong entity, string text)

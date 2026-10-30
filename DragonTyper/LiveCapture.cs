@@ -222,48 +222,23 @@ internal sealed unsafe class LiveCapture
     {
         try
         {
-            var sheet = Plugin.Words?.SheetWords;
-            if (sheet == null || sheet.Count == 0)
+            if (!KtgHudArrays.TryRead(out var hud) || hud.Count == 0)
             {
-                WriteLine("  (word sheet empty)");
-                return;
+                WriteLine("  (HUD arrays empty)");
+                // fall through to legacy pair scan below
             }
-
-            var module = RaptureAtkModule.Instance();
-            if (module == null)
-                return;
-
-            var holder = module->AtkArrayDataHolder;
-            var count = Math.Min((int)holder.NumberArrayCount, 200);
-            var hits = 0;
-            for (var i = 0; i < count && hits < 40; i++)
+            else
             {
-                var nad = module->GetNumberArrayData(i);
-                if (nad == null || nad->IntArray == null || nad->Size is <= 0 or > 96)
-                    continue;
-                var size = nad->Size;
-                for (var s = 0; s + 1 < size && hits < 40; s++)
+                foreach (var w in hud.Take(40))
                 {
-                    var a = nad->IntArray[s];
-                    var b = nad->IntArray[s + 1];
-                    var ua = unchecked((uint)a);
-                    var ub = unchecked((uint)b);
-                    string? text = null;
-                    uint entity = 0;
-                    if (ua is >= 0x40000000 and <= 0x4FFFFFFF && sheet.TryGetValue(ub, out text))
-                        entity = ua;
-                    else if (ub is >= 0x40000000 and <= 0x4FFFFFFF && sheet.TryGetValue(ua, out text))
-                        entity = ub;
-                    else
-                        continue;
-
-                    WriteLine($"  num[{i}][{s}] entity={entity} wordId → \"{text}\"");
-                    hits++;
+                    WriteLine(
+                        $"  hud entity={w.EntityId} kind={w.Kind} cast%={w.CastProgress} important={w.ImportantCast} vis={w.Visible} \"{w.Name}\" reading=\"{w.Reading}\" cast=\"{w.CastName}\"");
                 }
+
+                return;
             }
 
-            if (hits == 0)
-                WriteLine("  (no entity/wordId pairs this snapshot)");
+            WriteLine("  (no HUD array words this snapshot)");
         }
         catch (Exception ex)
         {
