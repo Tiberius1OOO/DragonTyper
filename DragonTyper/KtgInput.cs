@@ -17,9 +17,8 @@ namespace DragonTyper;
 
 /// <summary>
 /// Keybound Brawler word reader.
-/// Trust only on-screen KTGEWord balloon text (WordFeed). Atk[1] is a soft hint.
+/// Primary source: KTGEWord fixed slots via WordFeed / KtgWordSlots.
 /// Do not read KTGInput TextInput as a word source — that is our SetText echo.
-/// NamePlate is ignored — player/pet names.
 /// </summary>
 internal static unsafe class KtgInput
 {
@@ -37,18 +36,17 @@ internal static unsafe class KtgInput
 
     private static readonly HashSet<string> NoiseWords = new(StringComparer.OrdinalIgnoreCase)
     {
-        "MP", "CP", "GP", "TP", "EP", "HP", "Limit Break", "Support", "Fair Skies",
-        "Playing Recorded Duty", "Recording Duty", "Bard", "Phoenix", "SCORE",
+        "MP", "CP", "GP", "TP", "EP", "HP", "Limit Break", "Fair Skies",
+        "Playing Recorded Duty", "Recording Duty", "SCORE",
         "TYPING FEVER!", "TYPING FEVER", "Duty Information", "In Duty", "Viewing Cutscene",
         "The Gold Saucer", "Immortal Flames", "Order of the Twin Adder", "Maelstrom",
-        "Defeat the airbuster", "The reinforcements fade...", "Miss", "Reflect", "Reflected",
-        "Interrupted!", "Interrupted", "Resist", "Charge", "BONUS", "HP",
+        "Defeat the airbuster", "The reinforcements fade...",
+        "Interrupted!", "Interrupted", "BONUS",
         "Enter", "Delete Text/Quit",
-        // Hotbar / action tooltip chrome that leaked via WordFeed 1.0.9
         "Ability", "Range", "Radius", "Recast", "Cast", "Instant",
         "BRD", "PLD", "WAR", "DRK", "GNB", "WHM", "SCH", "AST", "SGE",
         "MNK", "DRG", "NIN", "SAM", "RPR", "VPR", "MCH", "DNC", "BLM", "SMN", "RDM", "PCT",
-        "Ninjutsu", "gil", "Tankbuster",
+        "gil", "Tankbuster",
     };
 
     public static IReadOnlyList<WordEntry> CachedWords
@@ -106,15 +104,25 @@ internal static unsafe class KtgInput
             PluginLogHelpers.WarnOnce("wordfeed-read", 5000, "WordFeed read failed: {Message}", ex.Message);
         }
 
-        // 1) Every KTGEWord instance (pooled addon; deep text walk).
+        // 1) Direct slot read (same path as WordFeed).
+        try
+        {
+            var slots = KtgWordSlots.ReadAll();
+            if (slots.Count > 0)
+            {
+                StoreCache(slots, "KTGEWord:slots");
+                return slots;
+            }
+        }
+        catch (Exception ex)
+        {
+            PluginLogHelpers.WarnOnce("slots-read", 5000, "Slot read failed: {Message}", ex.Message);
+        }
+
+        // 2) Legacy deep walk fallback.
         var fromAll = ReadAllKtgEWordInstances();
         if (fromAll.Count > 0)
             return fromAll;
-
-        // 2) Single GetAddonByName fallback.
-        var fromWord = ReadWordsFromNamedAddon(WordAddonName, "KTGEWord");
-        if (fromWord.Count > 0)
-            return fromWord;
 
         lock (Gate)
         {
@@ -845,19 +853,19 @@ internal static unsafe class KtgInput
         return names;
     }
 
-    /// <summary>True for typeable Keybound Brawler phrases; rejects player/pet/HUD noise.</summary>
+    /// <summary>True for typeable Keybound Brawler phrases; rejects player/HUD noise only.</summary>
     private static bool IsMinigameWord(string? text)
     {
+        text = KtgWordSlots.DecodeSeString(text);
         if (!LooksInteresting(text))
             return false;
-        text = text!.Trim();
 
         if (NoiseWords.Contains(text))
             return false;
-        if (IsKnownObjectName(text))
-            return false;
 
-        // Abbreviated nameplates like "Thalia L." / "Sosha S."
+        // Only reject player names — enemy names often ARE the typeable word.
+        if (IsKnownPlayerName(text))
+            return false;
         if (IsAbbreviatedPlayerName(text))
             return false;
 
@@ -869,11 +877,9 @@ internal static unsafe class KtgInput
         if (string.IsNullOrWhiteSpace(text))
             return false;
         text = text.Trim();
-        if (text.Length is < 2 or > 48)
+        if (text.Length is < 2 or > 80)
             return false;
         if (text.All(char.IsDigit))
-            return false;
-        if (text.Contains('\u0002') || text.Contains('\u0003'))
             return false;
 
         var letter = 0;
@@ -882,37 +888,35 @@ internal static unsafe class KtgInput
             if (char.IsLetter(c))
                 letter++;
             else if (!(char.IsWhiteSpace(c) || char.IsDigit(c)
-                       || c is '.' or ',' or '\'' or '-' or '!' or '?' or ':' or ';'))
+                       || c is '.' or ',' or '\'' or '-' or '!' or '?' or ':' or ';' or '"' or '/'))
                 return false;
         }
 
-        // Allow "Sector 8"; reject pure digit strings / progress counters.
         return letter >= 2;
     }
 
     private static bool IsAbbreviatedPlayerName(string text)
     {
-        // "First L." pattern used on crowded nameplates.
         var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length != 2)
             return false;
         return parts[1].Length == 2 && parts[1][1] == '.' && char.IsLetter(parts[1][0]);
     }
 
-    private static bool IsKnownObjectName(string text)
+    private static bool IsKnownPlayerName(string text)
     {
         try
         {
             foreach (var obj in Plugin.ObjectTable)
             {
-                if (obj == null || string.IsNullOrEmpty(obj.Name.TextValue))
+                if (obj is not IPlayerCharacter player)
                     continue;
-                var name = obj.Name.TextValue;
+                var name = player.Name.TextValue;
+                if (string.IsNullOrEmpty(name))
+                    continue;
                 if (name.Equals(text, StringComparison.OrdinalIgnoreCase))
                     return true;
-
-                // Match abbreviated form of a known player.
-                if (obj is IPlayerCharacter && IsAbbreviatedFormOf(name, text))
+                if (IsAbbreviatedFormOf(name, text))
                     return true;
             }
         }
