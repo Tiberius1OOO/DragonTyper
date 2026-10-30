@@ -89,7 +89,8 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.BeginGroup();
         ImGui.Dummy(new Vector2(0, 10));
         ImGui.TextColored(Theme.Gold, "DragonTyper");
-        ImGui.TextColored(Theme.TextMuted, "Press Start once, then it types the whole minigame");
+        ImGui.TextColored(Theme.Cyan, "AFK kick protection on while Start is running");
+        ImGui.TextColored(Theme.TextMuted, "Press Start once — it types the whole minigame");
         ImGui.EndGroup();
 
         ImGui.Dummy(new Vector2(0, 4));

@@ -6,6 +6,8 @@
 
 Dalamud plugin for the Gold Saucer **Keybound Brawler** duty. You walk in yourself, hit Start once, and it types the prompts until you Stop (or the duty ends).
 
+**AFK kick protection** is on while Start is running — the duty’s idle timer does not count UI submits as real keys, so without this you can get kicked mid-run even though words are going in.
+
 Nothing else. No queue bot, no pathing, no registrar spam. Just the typing part.
 
 ## Install

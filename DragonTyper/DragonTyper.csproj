@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>1.0.18.0</Version>
+    <Version>1.0.19.0</Version>
     <Author>Tiberius1OOO</Author>
     <Name>DragonTyper</Name>
-    <Punchline>Automatic word typing for Keybound Brawler with configurable delay.</Punchline>
-    <Description>While Active is on, DragonTyper watches the Keybound Brawler input window and submits words for you. Configure base delay, optional longer wait for long sentences, and enable or disable at any time. Outside the minigame it stays passive.</Description>
+    <Punchline>Keybound Brawler typer with AFK kick protection — Start once, it types the rest.</Punchline>
+    <Description>AFK kick protection built in (UI typing alone does not keep you in the duty — DragonTyper resets the idle timer). Press Start once and it types Keybound Brawler words for the whole minigame. Configurable delay with +/-20% jitter, Letterlock holds, barrier/interrupt priority. Solo — no other plugins required.</Description>
     <PackageProjectUrl>https://github.com/Tiberius1OOO/DragonTyper</PackageProjectUrl>
     <RepoUrl>https://github.com/Tiberius1OOO/DragonTyper</RepoUrl>
     <IconUrl>https://raw.githubusercontent.com/Tiberius1OOO/DragonTyper/main/images/icon.png</IconUrl>
