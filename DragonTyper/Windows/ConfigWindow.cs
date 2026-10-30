@@ -29,6 +29,16 @@ public sealed class ConfigWindow : Window, IDisposable
 
     public void Dispose() => logoTexture = null;
 
+    /// <summary>
+    /// Inside the duty, X only collapses to the floating logo — never fully gone.
+    /// Outside the duty, normal close.
+    /// </summary>
+    public override void OnClose()
+    {
+        if (plugin.IsInMinigame)
+            plugin.CollapseConfigToFloat();
+    }
+
     public override void PreDraw()
     {
         Theme.Push();
@@ -57,6 +67,12 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.Spacing();
         DrawFooter(typer);
+
+        if (plugin.IsInMinigame)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(Theme.TextMuted, "X collapses to a floating logo — always reachable in this duty.");
+        }
     }
 
     private void DrawHeader()

@@ -13,6 +13,9 @@ public sealed class Plugin : IDalamudPlugin
 {
     private const string CommandName = "/dragontyper";
 
+    /// <summary>Keybound Brawler duty TerritoryType (confirmed via live captures).</summary>
+    private const ushort KeyboundTerritory = 1359;
+
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
@@ -30,13 +33,17 @@ public sealed class Plugin : IDalamudPlugin
     internal LiveCapture Capture { get; }
     internal static WordFeed Words { get; private set; } = null!;
 
-    /// <summary>Keybound Brawler duty TerritoryType (confirmed via live captures).</summary>
-    private const ushort KeyboundTerritory = 1359;
-
     private readonly WindowSystem windowSystem = new("DragonTyper");
     private readonly ConfigWindow configWindow;
+    private readonly FloatLauncher floatLauncher;
     private bool wasLoggedIn;
     private bool wasInMinigame;
+
+    public bool IsInMinigame =>
+        ClientState.IsLoggedIn
+        && (ClientState.TerritoryType == KeyboundTerritory || !KtgInput.GetAddon().IsNull);
+
+    public bool IsConfigOpen => configWindow.IsOpen;
 
     public Plugin()
     {
@@ -45,7 +52,9 @@ public sealed class Plugin : IDalamudPlugin
         Capture = new LiveCapture();
         Words = new WordFeed();
         configWindow = new ConfigWindow(this);
+        floatLauncher = new FloatLauncher(this);
         windowSystem.AddWindow(configWindow);
+        windowSystem.AddWindow(floatLauncher);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -82,10 +91,35 @@ public sealed class Plugin : IDalamudPlugin
         Words.Dispose();
         windowSystem.RemoveAllWindows();
         configWindow.Dispose();
+        floatLauncher.Dispose();
         CommandManager.RemoveHandler(CommandName);
     }
 
-    public void ToggleConfig() => configWindow.Toggle();
+    public void ToggleConfig()
+    {
+        if (configWindow.IsOpen)
+        {
+            configWindow.IsOpen = false;
+            if (IsInMinigame)
+                CollapseConfigToFloat();
+            return;
+        }
+
+        ExpandConfigFromFloat();
+    }
+
+    public void ExpandConfigFromFloat()
+    {
+        floatLauncher.IsOpen = false;
+        configWindow.IsOpen = true;
+    }
+
+    public void CollapseConfigToFloat()
+    {
+        configWindow.IsOpen = false;
+        if (IsInMinigame)
+            floatLauncher.IsOpen = true;
+    }
 
     private void OnFrameworkUpdate(IFramework framework)
     {
@@ -99,6 +133,7 @@ public sealed class Plugin : IDalamudPlugin
                     Log.Information("Logged out. Typer paused.");
                     Typer.ResetIdle();
                     wasInMinigame = false;
+                    floatLauncher.IsOpen = false;
                 }
 
                 wasLoggedIn = false;
@@ -106,7 +141,7 @@ public sealed class Plugin : IDalamudPlugin
             }
 
             wasLoggedIn = true;
-            TryAutoOpenInMinigame();
+            UpdateMinigameUi();
 
             try
             {
@@ -126,21 +161,28 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
-    /// Menus are locked inside Keybound Brawler — open the UI once on entry
-    /// so Start/Stop stays reachable. Does not reopen if the user closes it mid-run.
+    /// Enter duty → full panel open.
+    /// Stay in duty → always either panel or undismissable float logo.
+    /// Leave duty → hide float; panel can close normally.
     /// </summary>
-    private void TryAutoOpenInMinigame()
+    private void UpdateMinigameUi()
     {
-        var inMinigame = ClientState.TerritoryType == KeyboundTerritory
-                         || !KtgInput.GetAddon().IsNull;
+        var inMinigame = IsInMinigame;
 
         if (inMinigame && !wasInMinigame)
         {
-            if (!configWindow.IsOpen)
-            {
-                configWindow.IsOpen = true;
-                Log.Information("Entered Keybound Brawler — opened DragonTyper UI.");
-            }
+            ExpandConfigFromFloat();
+            Log.Information("Entered Keybound Brawler — DragonTyper UI forced open.");
+        }
+        else if (inMinigame)
+        {
+            // Never allow both closed while menus are locked.
+            if (!configWindow.IsOpen && !floatLauncher.IsOpen)
+                floatLauncher.IsOpen = true;
+        }
+        else if (wasInMinigame)
+        {
+            floatLauncher.IsOpen = false;
         }
 
         wasInMinigame = inMinigame;
@@ -187,4 +229,3 @@ public sealed class Plugin : IDalamudPlugin
             : "[DragonTyper] Stopped.");
     }
 }
-
