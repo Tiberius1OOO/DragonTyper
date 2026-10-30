@@ -132,6 +132,12 @@ public sealed class TyperEngine(Plugin plugin)
                 KtgInput.LastSource);
         }
 
+        // SetText/callback does not count as key activity — duty kicks at ~60s idle.
+        unsafe
+        {
+            KtgIdleKeepalive.Pulse((FFXIVClientStructs.FFXIV.Component.GUI.AtkUnitBase*)addon.Address);
+        }
+
         if (letterlock.ShouldHold(addon, now, out var lockReason))
         {
             waitFrom = null;

@@ -45,6 +45,7 @@ Reads the word balloons from the game UI (all slots, not just whatever happened 
 It also:
 
 - Holds when Letterlock is up (Jammer / Cursed Gaze and the “inputs disabled” banner), including a short pause after those casts finish so you don’t eat the penalty  
+- Keeps the duty’s typing idle timer from kicking you (UI submit doesn’t count as a real keypress by itself)  
 - Uses the client language sheet — JP goes for the reading column, EN/DE/FR strip the optional punctuation the game doesn’t care about  
 - Remembers a word for a few seconds if the label flashes or gets obscured  
 

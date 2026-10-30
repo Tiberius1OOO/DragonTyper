@@ -484,6 +484,7 @@ internal static unsafe class KtgInput
         {
             if (TrySubmitViaTextInput(unit, word))
             {
+                KtgIdleKeepalive.Pulse(unit);
                 Plugin.Log.Information("Submit via TextInput+Enter for '{Word}'", word);
                 return true;
             }
@@ -496,6 +497,7 @@ internal static unsafe class KtgInput
         // 2) Minion-style named action: FireCallback("SubmitWord", text), close=false.
         if (TryFire(unit, close: false, "SubmitWord", word))
         {
+            KtgIdleKeepalive.Pulse(unit);
             Plugin.Log.Information("Submit via FireCallback SubmitWord for '{Word}'", word);
             return true;
         }
@@ -510,6 +512,7 @@ internal static unsafe class KtgInput
                     || TryFire(unit, close: false, 0)
                     || TryFire(unit, close: false, word))
                 {
+                    KtgIdleKeepalive.Pulse(unit);
                     Plugin.Log.Information("Submit via AtkValues[1]+callback for '{Word}'", word);
                     return true;
                 }
@@ -522,9 +525,16 @@ internal static unsafe class KtgInput
 
         // 4) Last resorts (still close=false).
         if (TryFire(unit, close: false, word))
+        {
+            KtgIdleKeepalive.Pulse(unit);
             return true;
+        }
+
         if (TryFire(unit, close: false, 0, word))
+        {
+            KtgIdleKeepalive.Pulse(unit);
             return true;
+        }
 
         Plugin.Log.Error("All SubmitWord paths failed for '{Word}'", word);
         return false;
