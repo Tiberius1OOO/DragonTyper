@@ -61,16 +61,10 @@ Status line shows what it’s about to type, hits/misses, and when it’s holdin
 | `/dragontyper start` | Start |
 | `/dragontyper stop` | Stop |
 | `/dragontyper toggle` | flip Start/Stop |
-| `/dragontyper dump` | dump live UI junk to `/xllog` |
-| `/dragontyper capture` | 5s deep log into the plugin config folder |
-
-There’s also a **Record 5s deep log** button in the UI. Keep the weird word on screen while it runs, then check the file if something still doesn’t get typed.
 
 ## If something’s wrong
 
 Open `/xllog` and filter `DragonTyper`. Typed words, Letterlock holds, and submit failures show up there.
-
-Still missing a specific prompt? Run a capture while it’s on screen and poke around the dump — that’s how the slot/array reading got fixed before.
 
 ## Notes
 

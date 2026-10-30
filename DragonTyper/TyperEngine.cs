@@ -48,28 +48,6 @@ public sealed class TyperEngine(Plugin plugin)
         status = plugin.Configuration.Active ? "Started. Waiting for the minigame..." : "Stopped";
     }
 
-    public void DumpAddon()
-    {
-        try
-        {
-            var addon = KtgInput.GetAddon();
-            var dump = KtgInput.Dump(addon);
-            Plugin.Log.Information("=== DragonTyper dump begin ===");
-            foreach (var line in dump.Split('\n'))
-            {
-                if (!string.IsNullOrWhiteSpace(line))
-                    Plugin.Log.Information("[dump] {Line}", line.TrimEnd());
-            }
-
-            Plugin.Log.Information("=== DragonTyper dump end ===");
-        }
-        catch (Exception ex)
-        {
-            LastError = $"Dump failed: {ex.Message}";
-            PluginLogHelpers.Error(ex, "DumpAddon crashed");
-        }
-    }
-
     public void Tick()
     {
         var now = Environment.TickCount64;
@@ -165,11 +143,11 @@ public sealed class TyperEngine(Plugin plugin)
             status = "Running. No words visible yet";
             if (emptyParseStreak >= 30)
             {
-                LastError = "No words parsed while input is open. Use Dump for live arrays.";
+                LastError = "No words parsed while input is open.";
                 PluginLogHelpers.WarnOnce(
                     "no-words-parsed",
                     WarnCooldownMs,
-                    "Input open/enabled but no words parsed (AtkValues={Count}, cache={Cache}). Press Dump.",
+                    "Input open/enabled but no words parsed (AtkValues={Count}, cache={Cache}).",
                     addon.AtkValuesCount,
                     KtgInput.CachedWords.Count);
             }

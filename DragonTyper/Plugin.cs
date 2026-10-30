@@ -13,7 +13,7 @@ public sealed class Plugin : IDalamudPlugin
 {
     private const string CommandName = "/dragontyper";
 
-    /// <summary>Keybound Brawler duty TerritoryType (confirmed via live captures).</summary>
+    /// <summary>Keybound Brawler duty TerritoryType.</summary>
     private const ushort KeyboundTerritory = 1359;
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
@@ -30,7 +30,6 @@ public sealed class Plugin : IDalamudPlugin
 
     public Configuration Configuration { get; }
     public TyperEngine Typer { get; }
-    internal LiveCapture Capture { get; }
     internal static WordFeed Words { get; private set; } = null!;
 
     private readonly WindowSystem windowSystem = new("DragonTyper");
@@ -49,7 +48,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Typer = new TyperEngine(this);
-        Capture = new LiveCapture();
         Words = new WordFeed();
         configWindow = new ConfigWindow(this);
         floatLauncher = new FloatLauncher(this);
@@ -58,7 +56,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Open DragonTyper. /dragontyper start|stop|toggle|dump|capture",
+            HelpMessage = "Open DragonTyper. /dragontyper start|stop|toggle",
         });
 
         Framework.Update += OnFrameworkUpdate;
@@ -142,16 +140,6 @@ public sealed class Plugin : IDalamudPlugin
 
             wasLoggedIn = true;
             UpdateMinigameUi();
-
-            try
-            {
-                Capture.Tick();
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Live capture tick failed");
-            }
-
             Typer.Tick();
         }
         catch (Exception ex)
@@ -203,15 +191,6 @@ public sealed class Plugin : IDalamudPlugin
                 break;
             case "toggle":
                 SetRunning(!Configuration.Active);
-                break;
-            case "dump":
-                Typer.DumpAddon();
-                ChatGui.Print("[DragonTyper] Dump written to /xllog.");
-                break;
-            case "capture":
-            case "probe":
-            case "record":
-                ChatGui.Print("[DragonTyper] " + Capture.Start());
                 break;
             default:
                 ToggleConfig();

@@ -16,11 +16,11 @@ public sealed class ConfigWindow : Window, IDisposable
         : base("DragonTyper###DragonTyperConfig")
     {
         this.plugin = plugin;
-        Size = new Vector2(440, 560);
+        Size = new Vector2(440, 480);
         SizeCondition = ImGuiCond.FirstUseEver;
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(380, 500),
+            MinimumSize = new Vector2(380, 420),
             MaximumSize = new Vector2(700, 900),
         };
         Flags = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
@@ -63,14 +63,13 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.Spacing();
         DrawStatus(typer);
+
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
-        DrawFooter(typer);
-
+        ImGui.TextColored(Theme.TextMuted, "/dragontyper start|stop|toggle");
         if (plugin.IsInMinigame)
         {
-            ImGui.Spacing();
             ImGui.TextColored(Theme.TextMuted, "X collapses to a floating logo — always reachable in this duty.");
         }
     }
@@ -179,31 +178,6 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextColored(Theme.Cyan, $"Hits  {typer.Hits}");
         ImGui.SameLine(0, 24);
         ImGui.TextColored(Theme.TextMuted, $"Misses  {typer.Misses}");
-    }
-
-    private void DrawFooter(TyperEngine typer)
-    {
-        var capture = plugin.Capture;
-        if (capture.IsRunning)
-        {
-            ImGui.TextColored(Theme.Cyan, $"Recording deep log… {capture.RemainingMs} ms left");
-            ImGui.TextColored(Theme.TextMuted, "Keep the word on screen. Then send screenshot.");
-        }
-        else if (ImGui.Button("Record 5s deep log", new Vector2(200, 0)))
-        {
-            Plugin.ChatGui.Print("[DragonTyper] " + capture.Start());
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("Dump once", new Vector2(110, 0)))
-        {
-            typer.DumpAddon();
-            Plugin.ChatGui.Print("[DragonTyper] Dump written to /xllog.");
-        }
-
-        ImGui.TextColored(Theme.TextMuted, "/dragontyper start|stop|dump|capture");
-        if (!string.IsNullOrEmpty(capture.FilePath))
-            ImGui.TextColored(Theme.GoldDim, Path.GetFileName(capture.FilePath));
     }
 
     private void EnsureLogo()
