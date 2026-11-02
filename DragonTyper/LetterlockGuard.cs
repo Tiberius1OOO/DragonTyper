@@ -52,6 +52,8 @@ internal sealed class LetterlockGuard
     private string lastHaltName = "";
     private long lastDisabledToastAt;
     private long lastReEnabledToastAt;
+    private int lastLockSeconds = -1;
+    private long lastLockSecondsChangeAt;
 
     public void Reset()
     {
@@ -62,6 +64,8 @@ internal sealed class LetterlockGuard
         lastHaltName = "";
         lastDisabledToastAt = 0;
         lastReEnabledToastAt = 0;
+        lastLockSeconds = -1;
+        lastLockSecondsChangeAt = 0;
     }
 
     public bool ShouldHold(AtkUnitBasePtr inputAddon, long now, out string reason)
@@ -82,16 +86,13 @@ internal sealed class LetterlockGuard
             wasCastingHalt = false;
         }
 
-        var lockReadable = TryReadInputLock(inputAddon, out var allowed, out var lockSeconds, out var lockReason);
+        var lockReadable = TryReadInputLock(inputAddon, now, out var allowed, out var lockSeconds, out var lockReason);
 
-        // Game input flags are authoritative once readable.
+        // Game input flags are authoritative once readable. Do not invent a long holdUntil
+        // from Atk[4] — a sticky seconds value was re-arming the hold forever.
         if (lockReadable && !allowed)
         {
             reason = lockReason;
-            if (lockSeconds > 0)
-                holdUntil = Math.Max(holdUntil, now + Math.Min(lockSeconds, 12) * 1000L);
-            else
-                holdUntil = Math.Max(holdUntil, now + 250);
             return true;
         }
 
@@ -179,7 +180,7 @@ internal sealed class LetterlockGuard
         return false;
     }
 
-    private static bool TryReadInputLock(AtkUnitBasePtr addon, out bool allowed, out int lockSeconds, out string reason)
+    private bool TryReadInputLock(AtkUnitBasePtr addon, long now, out bool allowed, out int lockSeconds, out string reason)
     {
         allowed = false;
         lockSeconds = 0;
@@ -191,15 +192,27 @@ internal sealed class LetterlockGuard
             return false;
 
         lockSeconds = ReadLockSeconds(addon);
-        if (lockSeconds > 0)
+        if (lockSeconds != lastLockSeconds)
         {
-            reason = $"Typing prohibited ({lockSeconds}s)";
-            return true;
+            lastLockSeconds = lockSeconds;
+            lastLockSecondsChangeAt = now;
         }
+
+        // Atk[2] is authority. Atk[4] only counts while it is actually changing (countdown).
+        // A stuck nonzero [4] must not hold forever after typing is re-enabled.
+        var lockSecondsLive = lockSeconds > 0 && now - lastLockSecondsChangeAt < 1500;
 
         if (!enabled)
         {
-            reason = "Activity prohibits typing";
+            reason = lockSecondsLive
+                ? $"Typing prohibited ({lockSeconds}s)"
+                : "Activity prohibits typing";
+            return true;
+        }
+
+        if (lockSecondsLive)
+        {
+            reason = $"Typing prohibited ({lockSeconds}s)";
             return true;
         }
 
@@ -324,6 +337,8 @@ internal sealed class LetterlockGuard
             var node = mgr->NodeList[i];
             if (node == null)
                 continue;
+            if (!NodeVisiblyOn(node))
+                continue;
             if (node->Type == NodeType.Text && node->NodeId == 4)
             {
                 var text = KtgWordSlots.DecodeSeString(((AtkTextNode*)node)->NodeText.ToString());
@@ -383,6 +398,8 @@ internal sealed class LetterlockGuard
             var node = mgr->NodeList[i];
             if (node == null)
                 continue;
+            if (!NodeVisiblyOn(node))
+                continue;
             if (node->Type == NodeType.Text)
             {
                 var text = KtgWordSlots.DecodeSeString(((AtkTextNode*)node)->NodeText.ToString());
@@ -397,6 +414,9 @@ internal sealed class LetterlockGuard
             }
         }
     }
+
+    private static unsafe bool NodeVisiblyOn(AtkResNode* node) =>
+        node != null && node->NodeFlags.HasFlag(NodeFlags.Visible) && node->Color.A > 0;
 
     public static bool IsHaltSpell(string? spellName, uint actionId)
     {
