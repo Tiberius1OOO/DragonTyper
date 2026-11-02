@@ -7,20 +7,24 @@ using FFXIVClientStructs.FFXIV.Component.GUI;
 namespace DragonTyper;
 
 /// <summary>
-/// Holds typing during Letterlock windows:
-/// KTGInput Atk[2]/[4], halt casts (Jammer / Cursed Gaze), post-cast tail, UI banners.
+/// Holds typing during Letterlock windows.
+/// Authoritative: KTGInput Atk[2]/[4]. Casts (Jammer / Cursed Gaze) cover the pre-lock
+/// window; a short post-cast grace covers the gap before Atk flips. Live screen toasts
+/// only — never KTGHudLog history (that sticky "don't type" forever).
 /// </summary>
 internal sealed class LetterlockGuard
 {
-    private const float PauseFromProgress = 0.50f;
-    private const long TailMs = 3000;
-    private const float PreCastHaltSeconds = 1.8f;
-    private const long PostCastHoldMs = 3800;
+    private const float PauseFromProgress = 0.55f;
+    private const float PreCastHaltSeconds = 1.5f;
+    /// <summary>Brief gap after halt cast ends before Atk lock usually appears.</summary>
+    private const long PostCastHoldMs = 900;
+    /// <summary>Max grace after cast while waiting for Atk lock / toast.</summary>
+    private const long MaxPostCastGraceMs = 1800;
 
     private static readonly HashSet<uint> HaltActionIds =
     [
+        // Keybound Brawler Letterlock casts (live-confirmed).
         49529, 49532, 49702,
-        21396, 17407, 8342, 8341, 7354, 7353, 32448, 512,
     ];
 
     private static readonly string[] HaltSpellNames =
@@ -46,6 +50,8 @@ internal sealed class LetterlockGuard
     private float lastHaltCurrent;
     private float lastHaltRemaining;
     private string lastHaltName = "";
+    private long lastDisabledToastAt;
+    private long lastReEnabledToastAt;
 
     public void Reset()
     {
@@ -54,77 +60,117 @@ internal sealed class LetterlockGuard
         lastHaltCurrent = 0;
         lastHaltRemaining = 0;
         lastHaltName = "";
+        lastDisabledToastAt = 0;
+        lastReEnabledToastAt = 0;
     }
 
     public bool ShouldHold(AtkUnitBasePtr inputAddon, long now, out string reason)
     {
         reason = "";
 
-        if (BannerMatches(InputsReEnabled))
+        // Live screen toasts only (not chat log history).
+        var reEnabledToast = ScreenToastMatches(InputsReEnabled);
+        var disabledToast = ScreenToastMatches(InputsDisabled);
+        if (reEnabledToast)
+            lastReEnabledToastAt = now;
+        if (disabledToast)
+            lastDisabledToastAt = now;
+
+        if (reEnabledToast || (lastReEnabledToastAt != 0 && now - lastReEnabledToastAt < 400))
         {
             holdUntil = 0;
             wasCastingHalt = false;
         }
 
-        if (now < holdUntil)
+        var lockReadable = TryReadInputLock(inputAddon, out var allowed, out var lockSeconds, out var lockReason);
+
+        // Game input flags are authoritative once readable.
+        if (lockReadable && !allowed)
         {
-            reason = $"Letterlock hold ({Math.Max(0, holdUntil - now)}ms)";
+            reason = lockReason;
+            if (lockSeconds > 0)
+                holdUntil = Math.Max(holdUntil, now + Math.Min(lockSeconds, 12) * 1000L);
+            else
+                holdUntil = Math.Max(holdUntil, now + 250);
             return true;
         }
 
-        if (TryReadInputLock(inputAddon, out var allowed, out var lockSeconds, out var lockReason))
+        if (now < holdUntil)
         {
-            if (!allowed)
+            // If Atk already says we can type, drop leftover cast-grace timers.
+            if (lockReadable && allowed)
             {
-                reason = lockReason;
-                if (lockSeconds > 0)
-                    holdUntil = Math.Max(holdUntil, now + lockSeconds * 1000L);
+                holdUntil = 0;
+            }
+            else
+            {
+                reason = $"Letterlock hold ({Math.Max(0, holdUntil - now)}ms)";
                 return true;
             }
         }
 
-        if (BannerMatches(InputsDisabled))
+        // Live "Inputs disabled" toast — only while fresh, and only if Atk is not clearly ready.
+        if (disabledToast
+            && lastDisabledToastAt >= lastReEnabledToastAt
+            && (!lockReadable || !allowed))
         {
             reason = "Inputs disabled banner";
+            holdUntil = Math.Max(holdUntil, now + 300);
             return true;
         }
 
-        if (TryFindHaltCast(out var name, out var current, out var total, out var remaining, out var progress))
+        if (TryFindHaltCast(out var name, out var current, out var total, out var remaining, out var progress, out var fromObjectTable))
         {
-            wasCastingHalt = true;
-            lastHaltName = name;
-            lastHaltCurrent = current;
-            lastHaltRemaining = remaining;
-
-            // Pause from half cast bar onward, and always in the last 1.8s.
-            if (progress >= PauseFromProgress || remaining <= PreCastHaltSeconds)
+            // Cast-bar label alone can linger; only trust it when Atk is already locked
+            // or we have a real ObjectTable cast.
+            if (!fromObjectTable && lockReadable && allowed)
             {
-                holdUntil = Math.Max(holdUntil, now + TailMs);
-                reason = $"Letterlock cast: {name} ({remaining:0.0}s left)";
-                return true;
+                // ignore sticky cast-bar caption
+            }
+            else
+            {
+                wasCastingHalt = true;
+                lastHaltName = name;
+                lastHaltCurrent = current;
+                lastHaltRemaining = remaining;
+
+                // Hold from mid-cast / last 1.5s — expire when the cast ends + tiny buffer.
+                if (progress >= PauseFromProgress || remaining <= PreCastHaltSeconds)
+                {
+                    var untilCastEnd = now + (long)(remaining * 1000f) + 200;
+                    holdUntil = Math.Max(holdUntil, untilCastEnd);
+                    reason = $"Letterlock cast: {name} ({remaining:0.0}s left)";
+                    return true;
+                }
             }
         }
         else if (wasCastingHalt)
         {
             wasCastingHalt = false;
-            if (lastHaltCurrent >= 3.0f || lastHaltRemaining <= 2.0f)
+            // Only a short grace if the cast actually finished late enough to matter,
+            // and Atk has not already unlocked typing.
+            if ((lastHaltCurrent >= 2.5f || lastHaltRemaining <= 2.0f)
+                && !(lockReadable && allowed))
             {
-                holdUntil = Math.Max(holdUntil, now + PostCastHoldMs);
+                var grace = Math.Min(PostCastHoldMs, MaxPostCastGraceMs);
+                holdUntil = Math.Max(holdUntil, now + grace);
                 reason = $"Letterlock after {lastHaltName}";
                 return true;
             }
         }
 
-        // Array cast-name fallback (localized).
+        // HUD cast-name fallback — hold only while progress is mid/late; do not slide a long tail.
         if (KtgHudArrays.TryRead(out var hud))
         {
             foreach (var w in hud)
             {
                 if (string.IsNullOrEmpty(w.CastName) || !IsHaltSpell(w.CastName, 0))
                     continue;
-                if (w.CastProgress < 50)
+                if (w.CastProgress < 55)
                     continue;
-                holdUntil = Math.Max(holdUntil, now + TailMs);
+                if (lockReadable && allowed)
+                    continue;
+                holdUntil = Math.Max(holdUntil, now + 250);
                 reason = $"Letterlock cast (HUD): {w.CastName}";
                 return true;
             }
@@ -191,10 +237,12 @@ internal sealed class LetterlockGuard
     }
 
     private static bool TryFindHaltCast(
-        out string name, out float current, out float total, out float remaining, out float progress)
+        out string name, out float current, out float total, out float remaining, out float progress,
+        out bool fromObjectTable)
     {
         name = "";
         current = total = remaining = progress = 0;
+        fromObjectTable = false;
         try
         {
             foreach (var obj in Plugin.ObjectTable)
@@ -210,6 +258,7 @@ internal sealed class LetterlockGuard
                 remaining = Math.Max(0f, total - current);
                 progress = current / total;
                 name = $"action:{actionId}";
+                fromObjectTable = true;
                 return true;
             }
         }
@@ -218,7 +267,7 @@ internal sealed class LetterlockGuard
             // zone transition
         }
 
-        // Cast-bar caption fallback.
+        // Cast-bar caption fallback (no timer — only hold while bar visible + name matches).
         try
         {
             var bar = Plugin.GameGui.GetAddonByName("KTGEnemyCastBar");
@@ -229,11 +278,11 @@ internal sealed class LetterlockGuard
                     if (!IsHaltSpell(label, 0))
                         continue;
                     name = label;
-                    // Unknown timer from UI alone — treat as mid-cast danger.
                     progress = PauseFromProgress;
                     remaining = PreCastHaltSeconds;
                     current = 3f;
                     total = 5f;
+                    fromObjectTable = false;
                     return true;
                 }
             }
@@ -290,10 +339,9 @@ internal sealed class LetterlockGuard
         }
     }
 
-    private static bool BannerMatches(string[] needles)
-    {
-        return AddonContainsAny("_ScreenText", needles) || AddonContainsAny("KTGHudLog", needles);
-    }
+    /// <summary>Live center-screen toast only. KTGHudLog keeps old lines and stuck the hold forever.</summary>
+    private static bool ScreenToastMatches(string[] needles) =>
+        AddonContainsAny("_ScreenText", needles);
 
     private static unsafe bool AddonContainsAny(string addonName, string[] needles)
     {
